@@ -15,11 +15,22 @@
       <aside class="roster">
         <h2>The Roster</h2>
         <div id="roster-list"></div>
+        <h2>Planned Sessions</h2>
+        <form class="schedule-form" id="schedule-form">
+          <input type="datetime-local" id="schedule-input" required />
+          <button type="submit">Plan</button>
+        </form>
+        <div id="schedule-list"></div>
       </aside>
       <section class="stage">
         <div class="phase-label" id="phase-label">IDLE</div>
         <div class="timer idle" id="timer">25:00</div>
+        <div class="presets" id="presets"></div>
         <button class="start-focus" id="start-focus">Start Focus</button>
+        <button class="reset-btn" id="reset-focus" hidden>Reset</button>
+        <a class="booking-link" href="https://anu.libcal.com/" target="_blank" rel="noopener">
+          Book a group study room on ANU Library's own site &#8599;
+        </a>
       </section>
       <section class="chat" id="chat">
         <div class="chat-log" id="chat-log"></div>

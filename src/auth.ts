@@ -19,13 +19,14 @@ export function verifyPassword(password: string, hash: string, salt: string): bo
   return candidate.length === expected.length && timingSafeEqual(candidate, expected);
 }
 
-export function createUser(db: DatabaseSync, username: string, password: string): User {
+export function createUser(db: DatabaseSync, username: string, email: string, password: string): User {
   const { hash, salt } = hashPassword(password);
   const result = db
     .prepare(
-      "INSERT INTO users (username, password_hash, salt, created_at, focus_minutes_total) VALUES (?, ?, ?, ?, 0)",
+      "INSERT INTO users (username, email, password_hash, salt, created_at, focus_minutes_total) " +
+        "VALUES (?, ?, ?, ?, ?, 0)",
     )
-    .run(username, hash, salt, Date.now());
+    .run(username, email, hash, salt, Date.now());
   return db.prepare("SELECT * FROM users WHERE id = ?").get(result.lastInsertRowid) as unknown as User;
 }
 
@@ -33,6 +34,10 @@ export function findUserByUsername(db: DatabaseSync, username: string): User | u
   return db.prepare("SELECT * FROM users WHERE username = ?").get(username) as unknown as
     | User
     | undefined;
+}
+
+export function findUserByEmail(db: DatabaseSync, email: string): User | undefined {
+  return db.prepare("SELECT * FROM users WHERE email = ?").get(email) as unknown as User | undefined;
 }
 
 export function createSession(db: DatabaseSync, userId: number): string {

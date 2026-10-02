@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { marked } from "marked";
 import { getLocationBySlug, listLocations } from "../db.js";
+import { FOCUS_PRESETS_MIN } from "../rooms.js";
 
 export function pagesRouter(db: DatabaseSync, readmePath: string): Router {
   const router = Router();
@@ -13,6 +14,10 @@ export function pagesRouter(db: DatabaseSync, readmePath: string): Router {
 
   router.get("/api/locations", (_req, res) => {
     res.json(listLocations(db));
+  });
+
+  router.get("/api/config", (_req, res) => {
+    res.json({ focusPresetsMin: FOCUS_PRESETS_MIN });
   });
 
   router.get("/login", (_req, res) => {

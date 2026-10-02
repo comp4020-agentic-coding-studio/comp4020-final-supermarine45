@@ -8,7 +8,7 @@ async function registerAndGetCookie(username: string): Promise<string> {
   const res = await fetch(new URL("/auth/register", baseUrl), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password: "password123" }),
+    body: JSON.stringify({ username, email: `${username}@anu.edu.au`, password: "password123" }),
   });
   expect(res.status, await res.text()).toBe(201);
   const setCookie = res.headers.get("set-cookie");
@@ -63,7 +63,7 @@ it("rejects chat messages while the room's focus timer is running", async () => 
     listener.emit("room:join", { slug });
     await once(listener, "room:update");
 
-    sender.emit("room:start-focus");
+    sender.emit("room:start-focus", { minutes: 25 });
     const started = await untilStatus(sender, "focus");
     expect(started.timer.status).toBe("focus");
     await untilStatus(listener, "focus"); // listener's copy of the same transition

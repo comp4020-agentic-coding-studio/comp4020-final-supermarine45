@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 export interface User {
   id: number;
   username: string;
+  email: string;
   password_hash: string;
   salt: string;
   created_at: number;
@@ -23,7 +24,16 @@ export interface RoomState {
   location_id: number;
   status: RoomStatus;
   phase_end_at: number | null;
+  phase_started_at: number | null;
+  duration_ms: number | null;
   started_by: number | null;
+}
+
+export interface ScheduledSession {
+  id: number;
+  locationId: number;
+  username: string;
+  startsAt: number;
 }
 
 const SEED_LOCATIONS: Array<{ slug: string; name: string }> = [
@@ -42,6 +52,16 @@ export function openDb(path: string): DatabaseSync {
   seed(db);
   reconcileRoomStates(db);
   return db;
+}
+
+// Adds a column to an existing table only if it isn't already there, so
+// migrate() stays safe to run against both a brand-new DB and an older local
+// one that predates a given column.
+function ensureColumn(db: DatabaseSync, table: string, column: string, ddl: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  }
 }
 
 function migrate(db: DatabaseSync): void {
@@ -82,7 +102,20 @@ function migrate(db: DatabaseSync): void {
       body TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS scheduled_sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      location_id INTEGER NOT NULL REFERENCES locations(id),
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      starts_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
   `);
+
+  ensureColumn(db, "users", "email", "email TEXT NOT NULL DEFAULT ''");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (email)");
+  ensureColumn(db, "room_state", "duration_ms", "duration_ms INTEGER");
+  ensureColumn(db, "room_state", "phase_started_at", "phase_started_at INTEGER");
 }
 
 function seed(db: DatabaseSync): void {
@@ -106,7 +139,8 @@ function seed(db: DatabaseSync): void {
 function reconcileRoomStates(db: DatabaseSync): void {
   const now = Date.now();
   db.prepare(
-    "UPDATE room_state SET status = 'idle', phase_end_at = NULL, started_by = NULL " +
+    "UPDATE room_state SET status = 'idle', phase_end_at = NULL, phase_started_at = NULL, " +
+      "duration_ms = NULL, started_by = NULL " +
       "WHERE status != 'idle' AND phase_end_at IS NOT NULL AND phase_end_at <= ?",
   ).run(now);
 }
@@ -124,7 +158,41 @@ export function getLocationBySlug(db: DatabaseSync, slug: string): Location | un
 export function getRoomState(db: DatabaseSync, locationId: number): RoomState {
   return db
     .prepare(
-      "SELECT location_id, status, phase_end_at, started_by FROM room_state WHERE location_id = ?",
+      "SELECT location_id, status, phase_end_at, phase_started_at, duration_ms, started_by " +
+        "FROM room_state WHERE location_id = ?",
     )
     .get(locationId) as unknown as RoomState;
+}
+
+export function createScheduledSession(
+  db: DatabaseSync,
+  locationId: number,
+  userId: number,
+  startsAt: number,
+): void {
+  db.prepare(
+    "INSERT INTO scheduled_sessions (location_id, user_id, starts_at, created_at) VALUES (?, ?, ?, ?)",
+  ).run(locationId, userId, startsAt, Date.now());
+}
+
+export function listUpcomingSessions(db: DatabaseSync, locationId: number): ScheduledSession[] {
+  return db
+    .prepare(
+      "SELECT scheduled_sessions.id AS id, scheduled_sessions.location_id AS locationId, " +
+        "scheduled_sessions.starts_at AS startsAt, users.username AS username " +
+        "FROM scheduled_sessions JOIN users ON users.id = scheduled_sessions.user_id " +
+        "WHERE location_id = ? AND starts_at > ? ORDER BY starts_at ASC LIMIT 20",
+    )
+    .all(locationId, Date.now()) as unknown as ScheduledSession[];
+}
+
+// Deletes only if owned by userId; returns the freed session's locationId
+// (so the caller can re-broadcast that room) or undefined if nothing matched.
+export function deleteScheduledSession(db: DatabaseSync, id: number, userId: number): number | undefined {
+  const row = db
+    .prepare("SELECT location_id AS locationId FROM scheduled_sessions WHERE id = ? AND user_id = ?")
+    .get(id, userId) as unknown as { locationId: number } | undefined;
+  if (!row) return undefined;
+  db.prepare("DELETE FROM scheduled_sessions WHERE id = ?").run(id);
+  return row.locationId;
 }

@@ -1,9 +1,10 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Server, Socket } from "socket.io";
 import type { Location, RoomStatus, User } from "./db.js";
-import { getLocationBySlug, getRoomState, listLocations } from "./db.js";
+import { getLocationBySlug, getRoomState, listLocations, listUpcomingSessions } from "./db.js";
 
-export const FOCUS_DURATION_MS = 25 * 60 * 1000;
+export const FOCUS_PRESETS_MIN = [15, 25, 45, 50] as const;
+export const DEFAULT_FOCUS_MIN = 25;
 export const BREAK_DURATION_MS = 5 * 60 * 1000;
 
 interface Presence {
@@ -16,6 +17,7 @@ interface TimerPayload {
   status: RoomStatus;
   phaseEndAt: number | null;
   durationMs: number | null;
+  startedByUsername: string | null;
 }
 
 interface RosterEntry {
@@ -35,9 +37,15 @@ function roomName(locationId: number): string {
 
 function timerPayload(db: DatabaseSync, locationId: number): TimerPayload {
   const state = getRoomState(db, locationId);
-  const durationMs =
-    state.status === "focus" ? FOCUS_DURATION_MS : state.status === "break" ? BREAK_DURATION_MS : null;
-  return { status: state.status, phaseEndAt: state.phase_end_at, durationMs };
+  const durationMs = state.status === "idle" ? null : state.duration_ms;
+  let startedByUsername: string | null = null;
+  if (state.status !== "idle" && state.started_by !== null) {
+    const row = db.prepare("SELECT username FROM users WHERE id = ?").get(state.started_by) as unknown as
+      | { username: string }
+      | undefined;
+    startedByUsername = row?.username ?? null;
+  }
+  return { status: state.status, phaseEndAt: state.phase_end_at, durationMs, startedByUsername };
 }
 
 function roster(locationId: number): RosterEntry[] {
@@ -68,24 +76,35 @@ function broadcastLobby(io: Server, db: DatabaseSync): void {
   io.to("lobby").emit("lobby:update", summary);
 }
 
-function broadcastRoom(io: Server, db: DatabaseSync, locationId: number): void {
+// Exported so routes/schedule.ts can re-broadcast a room after planning or
+// cancelling a session, reusing this channel instead of a new event type.
+export function broadcastRoom(io: Server, db: DatabaseSync, locationId: number): void {
   io.to(roomName(locationId)).emit("room:update", {
     timer: timerPayload(db, locationId),
     roster: roster(locationId),
+    upcoming: listUpcomingSessions(db, locationId),
   });
 }
 
-function awardFocusMinutes(db: DatabaseSync, locationId: number, blockStartedAt: number): void {
+// cutoff caps how far past phaseStartedAt a user's overlap can count — the
+// full block length on a normal transition, or "now" when a reset ends a
+// block early, so only actually-elapsed time is ever awarded.
+function awardFocusMinutes(
+  db: DatabaseSync,
+  locationId: number,
+  phaseStartedAt: number,
+  elapsedCapMs: number,
+): void {
   const room = presence.get(locationId);
   if (!room) return;
-  const now = Date.now();
+  const cutoff = phaseStartedAt + elapsedCapMs;
   const update = db.prepare(
     "UPDATE users SET focus_minutes_total = focus_minutes_total + ? WHERE id = ?",
   );
   for (const p of room.values()) {
-    const overlapMs = now - Math.max(p.joinedAt, blockStartedAt);
+    const overlapMs = cutoff - Math.max(p.joinedAt, phaseStartedAt);
     if (overlapMs <= 0) continue;
-    const minutes = Math.min(overlapMs, FOCUS_DURATION_MS) / 60_000;
+    const minutes = overlapMs / 60_000;
     update.run(minutes, p.user.id);
     p.user.focus_minutes_total += minutes;
   }
@@ -109,16 +128,17 @@ function schedule(io: Server, db: DatabaseSync, locationId: number, delayMs: num
 function advancePhase(io: Server, db: DatabaseSync, locationId: number): void {
   const state = getRoomState(db, locationId);
   if (state.status === "focus") {
-    awardFocusMinutes(db, locationId, state.phase_end_at! - FOCUS_DURATION_MS);
-    const phaseEndAt = Date.now() + BREAK_DURATION_MS;
-    db.prepare("UPDATE room_state SET status = 'break', phase_end_at = ? WHERE location_id = ?").run(
-      phaseEndAt,
-      locationId,
-    );
+    awardFocusMinutes(db, locationId, state.phase_started_at!, state.duration_ms!);
+    const now = Date.now();
+    db.prepare(
+      "UPDATE room_state SET status = 'break', phase_end_at = ?, phase_started_at = ?, duration_ms = ? " +
+        "WHERE location_id = ?",
+    ).run(now + BREAK_DURATION_MS, now, BREAK_DURATION_MS, locationId);
     schedule(io, db, locationId, BREAK_DURATION_MS);
   } else if (state.status === "break") {
     db.prepare(
-      "UPDATE room_state SET status = 'idle', phase_end_at = NULL, started_by = NULL WHERE location_id = ?",
+      "UPDATE room_state SET status = 'idle', phase_end_at = NULL, phase_started_at = NULL, " +
+        "duration_ms = NULL, started_by = NULL WHERE location_id = ?",
     ).run(locationId);
   }
   broadcastRoom(io, db, locationId);
@@ -139,14 +159,41 @@ export function rearmTimers(io: Server, db: DatabaseSync): void {
   }
 }
 
-export function startFocus(io: Server, db: DatabaseSync, locationId: number, userId: number): void {
+export function startFocus(
+  io: Server,
+  db: DatabaseSync,
+  locationId: number,
+  userId: number,
+  minutes: number,
+): void {
   const state = getRoomState(db, locationId);
   if (state.status !== "idle") return;
-  const phaseEndAt = Date.now() + FOCUS_DURATION_MS;
+  if (!(FOCUS_PRESETS_MIN as readonly number[]).includes(minutes)) return;
+  const now = Date.now();
+  const durationMs = minutes * 60_000;
   db.prepare(
-    "UPDATE room_state SET status = 'focus', phase_end_at = ?, started_by = ? WHERE location_id = ?",
-  ).run(phaseEndAt, userId, locationId);
-  schedule(io, db, locationId, FOCUS_DURATION_MS);
+    "UPDATE room_state SET status = 'focus', phase_end_at = ?, phase_started_at = ?, duration_ms = ?, " +
+      "started_by = ? WHERE location_id = ?",
+  ).run(now + durationMs, now, durationMs, userId, locationId);
+  schedule(io, db, locationId, durationMs);
+  broadcastRoom(io, db, locationId);
+  broadcastLobby(io, db);
+}
+
+// Only the person who started a cycle can end it early — restricted to avoid
+// one user cutting off everyone else's focus block now that lengths vary.
+export function resetRoom(io: Server, db: DatabaseSync, locationId: number, userId: number): void {
+  const state = getRoomState(db, locationId);
+  if (state.status === "idle") return;
+  if (state.started_by !== userId) return;
+  if (state.status === "focus") {
+    awardFocusMinutes(db, locationId, state.phase_started_at!, Date.now() - state.phase_started_at!);
+  }
+  clearSchedule(locationId);
+  db.prepare(
+    "UPDATE room_state SET status = 'idle', phase_end_at = NULL, phase_started_at = NULL, " +
+      "duration_ms = NULL, started_by = NULL WHERE location_id = ?",
+  ).run(locationId);
   broadcastRoom(io, db, locationId);
   broadcastLobby(io, db);
 }
@@ -192,10 +239,16 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       broadcastLobby(io, db);
     });
 
-    socket.on("room:start-focus", () => {
+    socket.on("room:start-focus", (payload?: { minutes?: number }) => {
       const user: User | undefined = socket.data.user;
       if (!user || joinedLocationId === null) return;
-      startFocus(io, db, joinedLocationId, user.id);
+      startFocus(io, db, joinedLocationId, user.id, payload?.minutes ?? DEFAULT_FOCUS_MIN);
+    });
+
+    socket.on("room:reset", () => {
+      const user: User | undefined = socket.data.user;
+      if (!user || joinedLocationId === null) return;
+      resetRoom(io, db, joinedLocationId, user.id);
     });
 
     socket.on("chat:send", ({ body }: { body: string }) => {

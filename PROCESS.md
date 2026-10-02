@@ -22,3 +22,51 @@ Focus-minute accounting awards every socket present in a room the overlap betwee
 ## Verification
 
 `pnpm typecheck` is clean. `pnpm check` runs `spec/invariants.test.ts` (the course's own `/` and `/readme/` checks) alongside two new specs written against this app's actual contract: `spec/latecomer-sync.test.ts` (a second user joining mid-block gets the server's true remaining time, not a fresh timer) and `spec/focus-enforcement.test.ts` (the server silently drops a `chat:send` sent during a focus block, regardless of what the sender's own client shows). All four pass locally against the running app.
+
+## Decision record: 2026-10-02 — ANU email, configurable focus length, study planning
+
+The user asked for four things on top of the already-complete app: mandate an
+ANU email at signup, mandate a username (already true — see below), let
+whoever starts a block choose its length, and let people plan ahead to study
+at a location, "integrate with ANU library booking" if possible.
+
+- **Email check is format-only, not verification.** `/^[^\s@]+@anu\.edu\.au$/i`
+  against the registration payload, checked and rejected server-side before
+  the account is created, with a 409 if the (lowercased) address is already
+  registered. A real verification-email flow needs a transactional mail
+  provider and an API key neither this project nor the course scaffold
+  provisions, so the user explicitly chose the format-only option over
+  building (or stubbing) a send step. The email is stored but never returned
+  from any route — registration, login, and `/api/me` all still return only
+  `{ username, ... }` — so the username stays the only thing another user or
+  the API itself ever sees, confirming requirement #2 was already true
+  without needing a code change.
+- **Focus length is a bounded preset list (15/25/45/50 min), not free text.**
+  Offered as presets in the planning conversation; the user's own answer
+  picked exactly these four and asked for a reset option alongside them,
+  rather than a free-form minutes field. Bounded presets, validated
+  server-side (the client's choice is just whichever of the four it ticks),
+  keep this consistent with the existing "remove choices, don't add them"
+  framing already in README.md — a numeric input would reopen the exact kind
+  of customization-as-procrastination the original design argued against.
+  Reset is restricted to whoever started the block (`started_by`), not anyone
+  in the room, specifically to rule out one person ending another's focus
+  block as a prank now that blocks have a user-chosen, variable length.
+- **Library booking "integration" turned out to be infeasible, and the user
+  was told why before scope was set.** `anu.libcal.com` (Springshare/LibCal)
+  redirected a read-only room-availability fetch to ANU's SSO login
+  (`au.libauth.com`) — confirmed by actually hitting the page, not assumed —
+  and there's no public API or embeddable widget documented anywhere for it.
+  The only way to show live ANU room availability would be for this app to
+  accept a user's real ANU password and drive their SSO session on their
+  behalf, which is a credential-phishing shape regardless of intent, so it
+  was ruled out outright rather than scoped down. Asked directly whether this
+  was a hard technical wall or just out of assignment scope, the answer is
+  technical: there's no lower-effort version of "real integration" available
+  without that credential problem. What shipped instead, and what the user
+  confirmed as the right scope: an in-app planner (schedule a future session
+  at a location, visible live to everyone else currently in that room,
+  bounded to 14 days ahead to mirror the real library's own booking horizon)
+  plus a plain outbound link to ANU's actual booking site — both the UI copy
+  and README.md say plainly that this is not a real integration, rather than
+  implying a connection that doesn't exist.

@@ -8,7 +8,7 @@ async function registerAndGetCookie(username: string): Promise<string> {
   const res = await fetch(new URL("/auth/register", baseUrl), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password: "password123" }),
+    body: JSON.stringify({ username, email: `${username}@anu.edu.au`, password: "password123" }),
   });
   expect(res.status, await res.text()).toBe(201);
   const setCookie = res.headers.get("set-cookie");
@@ -36,7 +36,7 @@ it("gives a user who joins mid-block the server's authoritative remaining time",
     await once(starter, "room:update"); // initial idle state
 
     const beforeStart = Date.now();
-    starter.emit("room:start-focus");
+    starter.emit("room:start-focus", { minutes: 25 });
     const started = await once<{ timer: { status: string; phaseEndAt: number; durationMs: number } }>(
       starter,
       "room:update",

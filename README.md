@@ -53,3 +53,42 @@ counted on their account — that persistence is the whole bet. A second
 stranger joining the same room mid-block should see the exact time left, not
 a fresh timer, because that's the difference between a room that is actually
 synchronized and one that only looks synchronized until you check the clock.
+
+## A real ANU identity, but still just a username to everyone else
+
+Signing up requires an `@anu.edu.au` address, checked by format only — there's
+no verification email, because sending one needs a mail-sending service and an
+API key this project hasn't provisioned, so the gate is honest about being a
+domain check rather than proof of a live mailbox. The point of requiring it at
+all isn't to show it to anyone: the username is still the only identity the
+app ever displays, broadcasts, or returns from an API call, in the roster, in
+chat, in `/api/me`. Tying signup to a real ANU address just means the
+"real, physically real people" premise the rest of this README leans on is
+backed by something a bit stronger than an email field nobody checks.
+
+## Choosing how long to focus, and the right to end it early
+
+A block's length is one of four fixed presets — 15, 25, 45, or 50 minutes —
+picked by whoever starts it, in keeping with this app's stance that good
+productivity software removes choices rather than adding them: a free-form
+number input would turn "how long should I focus" into its own small
+procrastination. The server is the only thing that enforces the bound; a
+client that sent anything else would be ignored, the same posture as the
+chat-lock rule above. Whoever starts a block can also end it early with a
+Reset button — but only that person, not anyone else in the room, so a block
+can't be griefed by someone else in the room cutting it short. A reset still
+banks partial focus minutes for the time that did elapse.
+
+## Planning ahead, honestly
+
+You can mark intent to study at a location ahead of time — up to two weeks
+out, mirroring the real ANU library's own booking horizon — and anyone else
+who opens that room sees it appear immediately, the same live, no-refresh
+channel the roster and timer already use. This is **not** an integration with
+ANU's library room-booking system: that system (`anu.libcal.com`) requires
+ANU SSO login even to view read-only room availability, and the only way to
+build a real integration would be for this app to accept and replay a user's
+real ANU password, which is a hard no regardless of how useful the feature
+would be. So the room page is honest about what it actually does: an in-app
+planner that's visible to everyone in that room, plus a plain link out to
+ANU's own booking site for anyone who wants to reserve an actual room.

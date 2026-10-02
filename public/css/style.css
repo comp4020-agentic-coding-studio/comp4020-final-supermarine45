@@ -146,6 +146,53 @@ header.top h1 {
   color: #999;
 }
 
+.schedule-form {
+  display: flex;
+  gap: 0.4rem;
+  margin: 0.5rem 0;
+}
+
+.schedule-form input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 0.3rem;
+  border-radius: 4px;
+  font-family: var(--sans);
+  font-size: 0.75rem;
+}
+
+.schedule-form button {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.schedule-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  padding: 0.3rem 0;
+  color: #ccc;
+}
+
+.schedule-delete {
+  background: none;
+  border: none;
+  color: #999;
+  cursor: pointer;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
 .stage {
   display: flex;
   flex-direction: column;
@@ -198,6 +245,42 @@ button.start-focus:disabled {
   background: #333;
   color: #777;
   cursor: not-allowed;
+}
+
+.presets {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.preset {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+button.reset-btn {
+  background: transparent;
+  color: var(--break);
+  border: 1px solid var(--break);
+  font-weight: 700;
+  padding: 0.5rem 1.5rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.booking-link {
+  font-size: 0.85rem;
+  color: #aaaaaa;
+  text-decoration: underline;
 }
 
 .chat {
