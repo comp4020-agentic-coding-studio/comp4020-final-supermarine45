@@ -20,6 +20,8 @@
           <input type="datetime-local" id="schedule-input" required />
           <button type="submit">Plan</button>
         </form>
+        <p class="error" id="schedule-error"></p>
+        <p class="note" id="schedule-note" hidden>Sign up for a real account to plan ahead.</p>
         <div id="schedule-list"></div>
       </aside>
       <section class="stage">
@@ -31,6 +33,20 @@
         <a class="booking-link" href="https://anu.libcal.com/" target="_blank" rel="noopener">
           Book a group study room on ANU Library's own site &#8599;
         </a>
+        <div class="goals" id="goals">
+          <h2>Shared Goals</h2>
+          <form class="goal-form" id="goal-form" hidden>
+            <input id="goal-input" type="text" maxlength="200" placeholder="add something to focus on together" />
+            <button type="submit">Add</button>
+          </form>
+          <div id="goal-list"></div>
+        </div>
+        <div class="review-banner" id="review-banner" hidden>
+          <p class="review-title">Block's over. Still open:</p>
+          <div id="review-unfinished"></div>
+          <p class="review-sub">Extend to keep going, or let it lapse into break.</p>
+          <div class="extend-presets" id="extend-presets"></div>
+        </div>
       </section>
       <section class="chat" id="chat">
         <div class="chat-log" id="chat-log"></div>

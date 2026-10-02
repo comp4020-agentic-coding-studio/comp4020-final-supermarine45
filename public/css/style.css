@@ -111,6 +111,36 @@ header.top h1 {
   color: #aaaaaa;
 }
 
+.location-row .meta {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.planned-badge {
+  font-size: 0.7rem;
+  color: #999;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.1rem 0.5rem;
+}
+
+/* "Your upcoming sessions" panel on the landing page */
+.upcoming-panel {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.upcoming-panel h2 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #999;
+  margin: 0 0 0.5rem;
+}
+
 /* Room view */
 .room {
   display: grid;
@@ -191,6 +221,41 @@ header.top h1 {
   cursor: pointer;
   font-size: 0.8rem;
   flex-shrink: 0;
+}
+
+.schedule-group-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #777;
+  margin-top: 0.5rem;
+}
+
+.schedule-entry.mine span {
+  color: var(--fg);
+}
+
+.schedule-empty {
+  font-size: 0.8rem;
+  color: #777;
+}
+
+#schedule-error.ok {
+  color: var(--focus);
+}
+
+.note {
+  font-size: 0.75rem;
+  color: #999;
+}
+
+.guest-tag {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: #999;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.05rem 0.5rem;
 }
 
 .stage {
@@ -281,6 +346,152 @@ button.reset-btn {
   font-size: 0.85rem;
   color: #aaaaaa;
   text-decoration: underline;
+}
+
+/* Shared room goals */
+.goals {
+  width: 100%;
+  max-width: 420px;
+  border-top: 1px solid var(--border);
+  padding-top: 1rem;
+}
+
+.goals h2 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #999;
+  margin: 0 0 0.5rem;
+}
+
+.goal-form {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.goal-form input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 0.4rem;
+  border-radius: 4px;
+  font-family: var(--sans);
+  font-size: 0.8rem;
+}
+
+.goal-form button {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 0.4rem 0.7rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.goal-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0;
+  font-size: 0.9rem;
+}
+
+.goal-item span {
+  flex: 1;
+}
+
+.goal-item.done span {
+  color: #777;
+  text-decoration: line-through;
+}
+
+.goal-delete {
+  background: none;
+  border: none;
+  color: #999;
+  cursor: pointer;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+/* Review banner: unfinished goals + extend options after a focus block */
+.review-banner {
+  width: 100%;
+  max-width: 420px;
+  border: 1px solid var(--break);
+  border-radius: 6px;
+  padding: 1rem;
+  background: rgba(255, 191, 0, 0.06);
+}
+
+.review-title {
+  margin: 0 0 0.5rem;
+  font-weight: 700;
+  color: var(--break);
+  text-transform: uppercase;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+}
+
+.review-item {
+  font-size: 0.9rem;
+  padding: 0.15rem 0;
+}
+
+.review-sub {
+  font-size: 0.8rem;
+  color: #aaaaaa;
+  margin: 0.6rem 0 0.5rem;
+}
+
+.extend-presets {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.extend-presets button {
+  background: var(--break);
+  color: #0a0a0a;
+  border: none;
+  font-weight: 700;
+  padding: 0.4rem 0.8rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.extend-presets button:disabled {
+  background: #333;
+  color: #777;
+  cursor: not-allowed;
+}
+
+/* Encouragement toast: room-wide, same message for everyone, dismisses itself */
+.encouragement {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--focus);
+  color: var(--fg);
+  padding: 0.6rem 1.2rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  max-width: 90vw;
+  text-align: center;
+  animation: encouragement-in 0.3s ease-out;
+  z-index: 10;
+}
+
+@keyframes encouragement-in {
+  from { opacity: 0; transform: translate(-50%, 0.5rem); }
+  to { opacity: 1; transform: translate(-50%, 0); }
 }
 
 .chat {
@@ -380,6 +591,83 @@ button.reset-btn {
   color: var(--break);
   font-size: 0.85rem;
   min-height: 1.2em;
+}
+
+.auth .divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1.25rem 0;
+}
+
+.auth #guest-btn {
+  width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 0.6rem;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.warning {
+  font-size: 0.8rem;
+  color: #999;
+  margin-top: 0.5rem;
+  line-height: 1.4;
+}
+
+/* Account page */
+.account {
+  max-width: 420px;
+  margin: 3rem auto;
+  padding: 0 1.5rem;
+}
+
+.account #account-info p {
+  margin: 0.3rem 0;
+}
+
+.danger {
+  margin-top: 2rem;
+  border: 1px solid var(--break);
+  border-radius: 6px;
+  padding: 1rem;
+}
+
+.danger h2 {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--break);
+}
+
+.danger form {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.danger input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-family: var(--sans);
+}
+
+.danger button {
+  background: var(--break);
+  color: #0a0a0a;
+  border: none;
+  font-weight: 700;
+  padding: 0.5rem 0.8rem;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
 /* Rendered README */

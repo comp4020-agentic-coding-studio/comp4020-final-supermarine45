@@ -23,7 +23,7 @@ const io = new Server(httpServer);
 app.use(express.json());
 app.use(attachUser(db));
 app.use(express.static("public"));
-app.use("/auth", authRouter(db));
+app.use("/auth", authRouter(db, io));
 app.use(pagesRouter(db, README_PATH));
 app.use(scheduleRouter(db, io));
 

@@ -92,3 +92,66 @@ real ANU password, which is a hard no regardless of how useful the feature
 would be. So the room page is honest about what it actually does: an in-app
 planner that's visible to everyone in that room, plus a plain link out to
 ANU's own booking site for anyone who wants to reserve an actual room.
+
+A booking you make is never just a line in the room you made it from, either:
+it shows up immediately (read straight from the server on page load, not
+waiting on the first socket round-trip), it's counted as an "N planned" badge
+on that location from the home page, and it's listed on your own home page
+under "your upcoming sessions" regardless of which room you booked it in —
+so there's exactly one honest answer to "what have I actually booked,"
+not five rooms to check.
+
+## A shared goal list, and the accountability of a review window
+
+At the start of a block, anyone in the room can add a few lines to a shared
+goal list — not a personal to-do list, a **room** one, consistent with
+everything else in this app being visible to whoever's physically there
+rather than private to one account. If the list still has unchecked items
+when the clock runs out, the room doesn't jump straight to break: it enters a
+short review window first, where chat opens and the unfinished items sit on
+screen, and anyone currently in the room can extend the block by one of the
+same four fixed presets to keep working the list. Nobody is forced to decide
+anything — if the window lapses with nobody extending, the list is cleared
+and the room moves on to break exactly as if there'd been no goals at all.
+
+Extending is deliberately open to **anyone** in the room, not just whoever
+started the block — unlike Reset, which stays restricted to that one person.
+The asymmetry is the point: cutting a block short can be used to grief
+everyone else still working, so only the person who started it can do that;
+adding more time never can, so there's no reason to gate it the same way.
+And there's no separate "quit" button for review, because there was never a
+missing one — leaving a room by navigating away has always been possible at
+any time, including mid-review, and the review window is a chance to extend,
+not a lock on the door.
+
+## Anonymous entry, honestly implemented
+
+"Continue anonymously" gets you a random name — an adjective and an animal,
+like "Sleepy Koala 42" — never one you pick, so a guest can never pick a name
+that collides with or impersonates a real signed-in user. A guest can join a
+room, start and extend blocks, chat, and add or check off shared goals with
+full parity to a real account; the only things withheld are the ones that are
+meaningless for an identity guaranteed not to last — no focus-minutes figure,
+no place in anyone's statistics, and no access to the forward-looking study
+planner, since planning ahead is a commitment to a future this identity won't
+be around for.
+
+The "won't persist beyond this session" promise is implemented as literally
+as possible: a guest identity has no row in the database at all, not a users
+row that gets deleted later. It lives only in server memory for as long as
+the process and that browser tab are both still around, under the same
+session-cookie mechanism a real login uses, so none of the room/timer/chat
+code has to know or care which kind of identity it's looking at.
+
+## Deleting an account, completely
+
+Account deletion is behind re-entering your password, with the consequences
+spelled out in plain text next to the button rather than a browser `confirm`
+popup that's too easy to click through without reading. Deleting an account
+deletes your chat history and your planned sessions, not just your login —
+this app doesn't have a lesser "deactivate" option, because partial deletion
+would make the "delete my account" button a lie. If the account mid-deletion
+is in the middle of running a focus block for a room with other people still
+in it, that block is ended first: everyone present banks the partial focus
+minutes they'd actually earned, and the room returns to idle cleanly rather
+than being left pointing at a `started_by` that no longer exists.

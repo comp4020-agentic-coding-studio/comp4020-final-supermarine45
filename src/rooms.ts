@@ -1,15 +1,37 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Server, Socket } from "socket.io";
-import type { Location, RoomStatus, User } from "./db.js";
-import { getLocationBySlug, getRoomState, listLocations, listUpcomingSessions } from "./db.js";
+import type { Identity, Location, RoomStatus } from "./db.js";
+import {
+  addRoomGoal,
+  clearRoomGoals,
+  countUpcomingSessions,
+  deleteRoomGoal,
+  deleteUserChatMessages,
+  deleteUserRow,
+  deleteUserScheduledSessions,
+  deleteUserSessions,
+  getLocationBySlug,
+  getRoomState,
+  isGuest,
+  listLocations,
+  listRoomGoals,
+  listUpcomingSessions,
+  locationsStartedBy,
+  randomEncouragement,
+  toggleRoomGoal,
+} from "./db.js";
 
 export const FOCUS_PRESETS_MIN = [15, 25, 45, 50] as const;
 export const DEFAULT_FOCUS_MIN = 25;
 export const BREAK_DURATION_MS = 5 * 60 * 1000;
+// Fixed window to react to an unfinished shared goal list before the room
+// moves on to break regardless — short on purpose, since it's a decision
+// point ("extend or let it lapse"), not a second focus block.
+export const REVIEW_WINDOW_MS = 3 * 60 * 1000;
 
 interface Presence {
   socketId: string;
-  user: User;
+  user: Identity;
   joinedAt: number;
 }
 
@@ -22,29 +44,50 @@ interface TimerPayload {
 
 interface RosterEntry {
   username: string;
-  focusMinutesTotal: number;
+  focusMinutesTotal: number | null;
   active: boolean;
+  isGuest: boolean;
 }
 
 // location_id -> socketId -> presence. In-memory: who's actually connected
 // right now. room_state in the DB is the durable, authoritative timer state.
 const presence = new Map<number, Map<string, Presence>>();
 const scheduledTransitions = new Map<number, NodeJS.Timeout>();
+// Room-wide encouragement beats, keyed the same way. Deliberately a separate
+// map from scheduledTransitions: these are cosmetic and never re-armed after
+// a restart, unlike the authoritative phase transition above.
+const encouragementTimers = new Map<number, NodeJS.Timeout[]>();
 
 function roomName(locationId: number): string {
   return `room:${locationId}`;
 }
 
+// A guest's username never lives in the DB, so a guest started_by can only
+// be resolved from whoever's still actually present in the room — if they've
+// since left, there's nothing left to recover it from, and that's fine: it's
+// display-only.
+function resolveStartedByUsername(db: DatabaseSync, locationId: number, startedBy: number): string | null {
+  if (isGuest(startedBy)) {
+    const room = presence.get(locationId);
+    if (!room) return null;
+    for (const p of room.values()) {
+      if (p.user.id === startedBy) return p.user.username;
+    }
+    return null;
+  }
+  const row = db.prepare("SELECT username FROM users WHERE id = ?").get(startedBy) as unknown as
+    | { username: string }
+    | undefined;
+  return row?.username ?? null;
+}
+
 function timerPayload(db: DatabaseSync, locationId: number): TimerPayload {
   const state = getRoomState(db, locationId);
   const durationMs = state.status === "idle" ? null : state.duration_ms;
-  let startedByUsername: string | null = null;
-  if (state.status !== "idle" && state.started_by !== null) {
-    const row = db.prepare("SELECT username FROM users WHERE id = ?").get(state.started_by) as unknown as
-      | { username: string }
-      | undefined;
-    startedByUsername = row?.username ?? null;
-  }
+  const startedByUsername =
+    state.status !== "idle" && state.started_by !== null
+      ? resolveStartedByUsername(db, locationId, state.started_by)
+      : null;
   return { status: state.status, phaseEndAt: state.phase_end_at, durationMs, startedByUsername };
 }
 
@@ -53,8 +96,9 @@ function roster(locationId: number): RosterEntry[] {
   if (!room) return [];
   return [...room.values()].map((p) => ({
     username: p.user.username,
-    focusMinutesTotal: p.user.focus_minutes_total,
+    focusMinutesTotal: isGuest(p.user.id) ? null : p.user.focus_minutes_total,
     active: true,
+    isGuest: isGuest(p.user.id),
   }));
 }
 
@@ -71,6 +115,7 @@ function broadcastLobby(io: Server, db: DatabaseSync): void {
       name: location.name,
       occupants: occupancy(location.id),
       active: state.status === "focus",
+      upcomingCount: countUpcomingSessions(db, location.id),
     };
   });
   io.to("lobby").emit("lobby:update", summary);
@@ -83,12 +128,15 @@ export function broadcastRoom(io: Server, db: DatabaseSync, locationId: number):
     timer: timerPayload(db, locationId),
     roster: roster(locationId),
     upcoming: listUpcomingSessions(db, locationId),
+    goals: listRoomGoals(db, locationId),
   });
 }
 
 // cutoff caps how far past phaseStartedAt a user's overlap can count — the
 // full block length on a normal transition, or "now" when a reset ends a
-// block early, so only actually-elapsed time is ever awarded.
+// block early, so only actually-elapsed time is ever awarded. Guests are
+// skipped entirely — no DB row to credit, and "no rank or statistics" is
+// the whole point of an anonymous session.
 function awardFocusMinutes(
   db: DatabaseSync,
   locationId: number,
@@ -102,6 +150,7 @@ function awardFocusMinutes(
     "UPDATE users SET focus_minutes_total = focus_minutes_total + ? WHERE id = ?",
   );
   for (const p of room.values()) {
+    if (isGuest(p.user.id)) continue;
     const overlapMs = cutoff - Math.max(p.joinedAt, phaseStartedAt);
     if (overlapMs <= 0) continue;
     const minutes = overlapMs / 60_000;
@@ -118,6 +167,31 @@ function clearSchedule(locationId: number): void {
   }
 }
 
+function clearEncouragements(locationId: number): void {
+  const timers = encouragementTimers.get(locationId);
+  if (timers) {
+    for (const timer of timers) clearTimeout(timer);
+    encouragementTimers.delete(locationId);
+  }
+}
+
+// Room-wide beats at 25/50/75% of a focus block's duration, so a 15-min and a
+// 50-min block both get exactly 3, proportionally spaced. Deliberately NOT
+// re-armed in rearmTimers like the authoritative phase timer is: a missed
+// beat after a server restart is cosmetic, not a correctness problem.
+function scheduleEncouragements(io: Server, db: DatabaseSync, locationId: number, durationMs: number): void {
+  clearEncouragements(locationId);
+  const timers = [0.25, 0.5, 0.75].map((fraction) => {
+    const timer = setTimeout(() => {
+      const body = randomEncouragement(db);
+      if (body) io.to(roomName(locationId)).emit("room:encouragement", { body });
+    }, Math.max(durationMs * fraction, 0));
+    timer.unref();
+    return timer;
+  });
+  encouragementTimers.set(locationId, timers);
+}
+
 function schedule(io: Server, db: DatabaseSync, locationId: number, delayMs: number): void {
   clearSchedule(locationId);
   const timeout = setTimeout(() => advancePhase(io, db, locationId), Math.max(delayMs, 0));
@@ -127,9 +201,31 @@ function schedule(io: Server, db: DatabaseSync, locationId: number, delayMs: num
 
 function advancePhase(io: Server, db: DatabaseSync, locationId: number): void {
   const state = getRoomState(db, locationId);
+  const now = Date.now();
   if (state.status === "focus") {
     awardFocusMinutes(db, locationId, state.phase_started_at!, state.duration_ms!);
-    const now = Date.now();
+    clearEncouragements(locationId);
+    const goals = listRoomGoals(db, locationId);
+    const hasUnfinished = goals.some((g) => !g.done);
+    if (hasUnfinished) {
+      // Goals are kept, not cleared, going into review — the whole point is
+      // to look at what's still unchecked.
+      db.prepare(
+        "UPDATE room_state SET status = 'review', phase_end_at = ?, phase_started_at = ?, " +
+          "duration_ms = ? WHERE location_id = ?",
+      ).run(now + REVIEW_WINDOW_MS, now, REVIEW_WINDOW_MS, locationId);
+      schedule(io, db, locationId, REVIEW_WINDOW_MS);
+    } else {
+      db.prepare(
+        "UPDATE room_state SET status = 'break', phase_end_at = ?, phase_started_at = ?, " +
+          "duration_ms = ? WHERE location_id = ?",
+      ).run(now + BREAK_DURATION_MS, now, BREAK_DURATION_MS, locationId);
+      schedule(io, db, locationId, BREAK_DURATION_MS);
+    }
+  } else if (state.status === "review") {
+    // Nobody extended in time — the list is cleared, same as if it had never
+    // been unfinished, and the room moves on to break as normal.
+    clearRoomGoals(db, locationId);
     db.prepare(
       "UPDATE room_state SET status = 'break', phase_end_at = ?, phase_started_at = ?, duration_ms = ? " +
         "WHERE location_id = ?",
@@ -145,10 +241,11 @@ function advancePhase(io: Server, db: DatabaseSync, locationId: number): void {
   broadcastLobby(io, db);
 }
 
-// On boot, any room still mid-focus/break (phase_end_at in the future — an
-// already-expired one was already reconciled to idle in db.ts) lost its
+// On boot, any room still mid-focus/break/review (phase_end_at in the future
+// — an already-expired one was already reconciled to idle in db.ts) lost its
 // in-memory setTimeout to the restart and must have it re-armed, or it would
-// stay wedged in that phase forever once the clock runs out.
+// stay wedged in that phase forever once the clock runs out. Encouragement
+// beats are NOT re-armed here — see scheduleEncouragements' comment.
 export function rearmTimers(io: Server, db: DatabaseSync): void {
   const now = Date.now();
   const rows = db
@@ -176,26 +273,103 @@ export function startFocus(
       "started_by = ? WHERE location_id = ?",
   ).run(now + durationMs, now, durationMs, userId, locationId);
   schedule(io, db, locationId, durationMs);
+  scheduleEncouragements(io, db, locationId, durationMs);
   broadcastRoom(io, db, locationId);
   broadcastLobby(io, db);
 }
 
-// Only the person who started a cycle can end it early — restricted to avoid
-// one user cutting off everyone else's focus block now that lengths vary.
-export function resetRoom(io: Server, db: DatabaseSync, locationId: number, userId: number): void {
+// Open to anyone currently in the room when the block is in review — not
+// gated to the original starter the way resetRoom is, because adding time
+// can never be used to grief the room the way cutting a block short can.
+// Whoever extends becomes the new started_by, since starting authority
+// already means "whoever is acting now", and that keeps Reset meaningful for
+// the extended block too. Goals are kept, not cleared: extending is for
+// finishing the same unfinished list.
+export function extendFocus(
+  io: Server,
+  db: DatabaseSync,
+  locationId: number,
+  userId: number,
+  minutes: number,
+): void {
+  const state = getRoomState(db, locationId);
+  if (state.status !== "review") return;
+  if (!(FOCUS_PRESETS_MIN as readonly number[]).includes(minutes)) return;
+  clearSchedule(locationId);
+  const now = Date.now();
+  const durationMs = minutes * 60_000;
+  db.prepare(
+    "UPDATE room_state SET status = 'focus', phase_end_at = ?, phase_started_at = ?, duration_ms = ?, " +
+      "started_by = ? WHERE location_id = ?",
+  ).run(now + durationMs, now, durationMs, userId, locationId);
+  schedule(io, db, locationId, durationMs);
+  scheduleEncouragements(io, db, locationId, durationMs);
+  broadcastRoom(io, db, locationId);
+  broadcastLobby(io, db);
+}
+
+// Ends whatever cycle is running right now, regardless of status — awards
+// partial focus minutes if the room was mid-focus, clears goals, clears any
+// pending phase/encouragement timers, and returns the room to idle. Shared
+// by resetRoom (ownership-gated, user-initiated) and account deletion
+// (ungated, system-initiated), so "end a room's cycle early" has exactly one
+// implementation.
+function forceEndRoom(io: Server, db: DatabaseSync, locationId: number): void {
   const state = getRoomState(db, locationId);
   if (state.status === "idle") return;
-  if (state.started_by !== userId) return;
   if (state.status === "focus") {
     awardFocusMinutes(db, locationId, state.phase_started_at!, Date.now() - state.phase_started_at!);
   }
   clearSchedule(locationId);
+  clearEncouragements(locationId);
+  clearRoomGoals(db, locationId);
   db.prepare(
     "UPDATE room_state SET status = 'idle', phase_end_at = NULL, phase_started_at = NULL, " +
       "duration_ms = NULL, started_by = NULL WHERE location_id = ?",
   ).run(locationId);
   broadcastRoom(io, db, locationId);
   broadcastLobby(io, db);
+}
+
+// Only the person who started a cycle can end it early — restricted to avoid
+// one user cutting off everyone else's focus block now that lengths vary.
+// Also allowed during review (same started_by-only check), so whoever's
+// "in charge" can bail out immediately instead of always waiting for the
+// review window to lapse. Leaving the room by navigating away remains
+// possible at any time regardless, for anyone — that's what "always have the
+// option to leave" actually requires, not a second in-room "quit" button.
+export function resetRoom(io: Server, db: DatabaseSync, locationId: number, userId: number): void {
+  const state = getRoomState(db, locationId);
+  if (state.status === "idle") return;
+  if (state.started_by !== userId) return;
+  forceEndRoom(io, db, locationId);
+}
+
+// System-driven cascade for account deletion. Any room this user started
+// that's still mid-cycle is force-ended first (via the same forceEndRoom
+// resetRoom uses) so nobody else present loses credit and started_by never
+// dangles once the users row disappears underneath it. Scheduled sessions,
+// chat messages and every session row are deleted before the user row
+// itself; any socket(s) currently connected as this user are disconnected so
+// the client can redirect cleanly rather than sit on a dead identity.
+export function deleteAccount(io: Server, db: DatabaseSync, userId: number): void {
+  for (const locationId of locationsStartedBy(db, userId)) {
+    forceEndRoom(io, db, locationId);
+  }
+  const scheduleLocations = deleteUserScheduledSessions(db, userId);
+  deleteUserChatMessages(db, userId);
+  deleteUserSessions(db, userId);
+  deleteUserRow(db, userId);
+  for (const locationId of scheduleLocations) broadcastRoom(io, db, locationId);
+
+  for (const room of presence.values()) {
+    for (const [socketId, p] of room) {
+      if (p.user.id !== userId) continue;
+      const socket = io.sockets.sockets.get(socketId);
+      socket?.emit("account:deleted");
+      socket?.disconnect(true);
+    }
+  }
 }
 
 export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
@@ -205,7 +379,7 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
     let joinedLocationId: number | null = null;
 
     socket.on("room:join", ({ slug }: { slug: string }) => {
-      const user: User | undefined = socket.data.user;
+      const user: Identity | undefined = socket.data.user;
       if (!user) {
         socket.emit("room:error", "sign in required");
         return;
@@ -240,23 +414,59 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
     });
 
     socket.on("room:start-focus", (payload?: { minutes?: number }) => {
-      const user: User | undefined = socket.data.user;
+      const user: Identity | undefined = socket.data.user;
       if (!user || joinedLocationId === null) return;
       startFocus(io, db, joinedLocationId, user.id, payload?.minutes ?? DEFAULT_FOCUS_MIN);
     });
 
     socket.on("room:reset", () => {
-      const user: User | undefined = socket.data.user;
+      const user: Identity | undefined = socket.data.user;
       if (!user || joinedLocationId === null) return;
       resetRoom(io, db, joinedLocationId, user.id);
     });
 
+    socket.on("room:extend", (payload?: { minutes?: number }) => {
+      const user: Identity | undefined = socket.data.user;
+      if (!user || joinedLocationId === null) return;
+      extendFocus(io, db, joinedLocationId, user.id, payload?.minutes ?? DEFAULT_FOCUS_MIN);
+    });
+
+    socket.on("room:goal-add", (payload?: { body?: string }) => {
+      const user: Identity | undefined = socket.data.user;
+      if (!user || joinedLocationId === null) return;
+      const state = getRoomState(db, joinedLocationId);
+      if (state.status !== "idle") return;
+      const trimmed = (payload?.body ?? "").trim().slice(0, 200);
+      if (!trimmed) return;
+      addRoomGoal(db, joinedLocationId, trimmed, user.id);
+      broadcastRoom(io, db, joinedLocationId);
+    });
+
+    socket.on("room:goal-toggle", (payload?: { id?: number }) => {
+      const user: Identity | undefined = socket.data.user;
+      if (!user || joinedLocationId === null || typeof payload?.id !== "number") return;
+      toggleRoomGoal(db, payload.id, joinedLocationId);
+      broadcastRoom(io, db, joinedLocationId);
+    });
+
+    socket.on("room:goal-delete", (payload?: { id?: number }) => {
+      const user: Identity | undefined = socket.data.user;
+      if (!user || joinedLocationId === null || typeof payload?.id !== "number") return;
+      const state = getRoomState(db, joinedLocationId);
+      if (state.status !== "idle") return;
+      if (!deleteRoomGoal(db, payload.id, user.id)) return;
+      broadcastRoom(io, db, joinedLocationId);
+    });
+
     socket.on("chat:send", ({ body }: { body: string }) => {
-      const user: User | undefined = socket.data.user;
+      const user: Identity | undefined = socket.data.user;
       if (!user || joinedLocationId === null) return;
       const state = getRoomState(db, joinedLocationId);
       // Enforced here, server-side, regardless of what the sender's own UI
-      // shows — a client that ignores its own disabled input still can't chat.
+      // shows — a client that ignores its own disabled input still can't
+      // chat. Review is deliberately left open by this check (it only blocks
+      // "focus") — review is exactly the moment people should be talking
+      // about what they did.
       if (state.status === "focus") return;
       const trimmed = body.trim().slice(0, 500);
       if (!trimmed) return;

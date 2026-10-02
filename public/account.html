@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en-AU">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Account — Shut Up and Read</title>
+    <link rel="stylesheet" href="/css/style.css" />
+  </head>
+  <body>
+    <header class="top">
+      <h1><a href="/" style="text-decoration:none;color:inherit">&larr;</a> Account</h1>
+    </header>
+    <main class="account">
+      <div id="account-info"></div>
+      <section class="danger" id="danger-zone">
+        <h2>Delete account</h2>
+        <p class="warning">
+          This permanently deletes your account, your chat messages, and your planned
+          sessions. It cannot be undone.
+        </p>
+        <form id="delete-form">
+          <input
+            name="password"
+            type="password"
+            placeholder="current password"
+            autocomplete="current-password"
+            required
+          />
+          <button type="submit">Delete my account</button>
+        </form>
+        <p class="error" id="delete-error"></p>
+      </section>
+    </main>
+    <script src="/js/account.js"></script>
+  </body>
+</html>

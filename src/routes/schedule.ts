@@ -1,8 +1,14 @@
 import { Router } from "express";
 import type { DatabaseSync } from "node:sqlite";
 import type { Server } from "socket.io";
-import { requireUser } from "../auth.js";
-import { createScheduledSession, deleteScheduledSession, getLocationBySlug } from "../db.js";
+import { requireRealUser, requireUser } from "../auth.js";
+import {
+  createScheduledSession,
+  deleteScheduledSession,
+  getLocationBySlug,
+  listUpcomingSessions,
+  listUpcomingSessionsForUser,
+} from "../db.js";
 import { broadcastRoom } from "../rooms.js";
 
 // Mirrors the real ANU library's own ~2-week booking horizon — a deliberate
@@ -12,7 +18,30 @@ const MAX_HORIZON_MS = 14 * 24 * 60 * 60 * 1000;
 export function scheduleRouter(db: DatabaseSync, io: Server): Router {
   const router = Router();
 
-  router.post("/api/locations/:slug/schedule", requireUser, (req, res) => {
+  // Plain read, same visibility as the room page itself — lets the client
+  // render the current list immediately on page load instead of waiting on
+  // the first room:update socket round-trip.
+  router.get("/api/locations/:slug/schedule", (req, res) => {
+    const location = getLocationBySlug(db, req.params.slug as string);
+    if (!location) {
+      res.status(404).json({ error: "unknown location" });
+      return;
+    }
+    res.json({ sessions: listUpcomingSessions(db, location.id) });
+  });
+
+  // The one place that answers "what have I actually booked", across every
+  // location, not just whichever room you booked it from. Guests are turned
+  // away by requireUser only in the sense that they have no bookings to show;
+  // requireUser (not requireRealUser) is enough here since this is a read.
+  router.get("/api/me/schedule", requireUser, (req, res) => {
+    res.json({ sessions: listUpcomingSessionsForUser(db, req.user!.id) });
+  });
+
+  // requireRealUser, not requireUser: a scheduled session is a persistent
+  // future commitment, which can't mean anything for a guest identity
+  // guaranteed to be gone by the time that future arrives.
+  router.post("/api/locations/:slug/schedule", requireRealUser, (req, res) => {
     const location = getLocationBySlug(db, req.params.slug as string);
     if (!location) {
       res.status(404).json({ error: "unknown location" });

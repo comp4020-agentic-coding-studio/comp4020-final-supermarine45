@@ -2,18 +2,36 @@ import { Router } from "express";
 import type { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { marked } from "marked";
-import { getLocationBySlug, listLocations } from "../db.js";
+import { countUpcomingSessions, findUserById, getLocationBySlug, isGuest, listLocations } from "../db.js";
 import { FOCUS_PRESETS_MIN } from "../rooms.js";
 
 export function pagesRouter(db: DatabaseSync, readmePath: string): Router {
   const router = Router();
 
   router.get("/api/me", (req, res) => {
-    res.json(req.user ? { username: req.user.username, focusMinutesTotal: req.user.focus_minutes_total } : null);
+    if (!req.user) {
+      res.json(null);
+      return;
+    }
+    if (isGuest(req.user.id)) {
+      res.json({ id: req.user.id, username: req.user.username, focusMinutesTotal: null, isGuest: true });
+      return;
+    }
+    const user = findUserById(db, req.user.id);
+    res.json({
+      id: req.user.id,
+      username: req.user.username,
+      focusMinutesTotal: req.user.focus_minutes_total,
+      isGuest: false,
+      email: user?.email,
+    });
   });
 
   router.get("/api/locations", (_req, res) => {
-    res.json(listLocations(db));
+    res.json(listLocations(db).map((location) => ({
+      ...location,
+      upcomingCount: countUpcomingSessions(db, location.id),
+    })));
   });
 
   router.get("/api/config", (_req, res) => {
@@ -26,6 +44,10 @@ export function pagesRouter(db: DatabaseSync, readmePath: string): Router {
 
   router.get("/register", (_req, res) => {
     res.sendFile("register.html", { root: "public" });
+  });
+
+  router.get("/account", (_req, res) => {
+    res.sendFile("account.html", { root: "public" });
   });
 
   router.get("/room/:slug", (req, res) => {

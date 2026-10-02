@@ -1,16 +1,22 @@
 import { Router } from "express";
 import type { DatabaseSync } from "node:sqlite";
+import type { Server } from "socket.io";
 import {
   clearSessionCookie,
+  createGuestIdentity,
   createSession,
   createUser,
+  destroyGuestSession,
   destroySession,
   findUserByEmail,
   findUserByUsername,
+  requireRealUser,
   sessionTokenFromCookieHeader,
   setSessionCookie,
   verifyPassword,
 } from "../auth.js";
+import { deleteAccount } from "../rooms.js";
+import { findUserById } from "../db.js";
 
 const USERNAME_RE = /^[a-zA-Z0-9_-]{3,24}$/;
 // Format check only, by design: a real send-a-verification-link flow needs an
@@ -18,7 +24,7 @@ const USERNAME_RE = /^[a-zA-Z0-9_-]{3,24}$/;
 // just confirms the address matches ANU's domain.
 const ANU_EMAIL_RE = /^[^\s@]+@anu\.edu\.au$/i;
 
-export function authRouter(db: DatabaseSync): Router {
+export function authRouter(db: DatabaseSync, io: Server): Router {
   const router = Router();
 
   router.post("/register", (req, res) => {
@@ -66,9 +72,33 @@ export function authRouter(db: DatabaseSync): Router {
     res.json({ username: user.username });
   });
 
+  router.post("/guest", (req, res) => {
+    const { token, identity } = createGuestIdentity();
+    setSessionCookie(res, token);
+    res.status(201).json({ username: identity.username });
+  });
+
   router.post("/logout", (req, res) => {
     const token = sessionTokenFromCookieHeader(req.headers.cookie);
-    if (token) destroySession(db, token);
+    if (token) {
+      destroySession(db, token);
+      destroyGuestSession(token);
+    }
+    clearSessionCookie(res);
+    res.json({ ok: true });
+  });
+
+  // Re-confirms the password rather than trusting the session alone, because
+  // this is irreversible and the session cookie could've been left signed in
+  // on a shared machine.
+  router.delete("/account", requireRealUser, (req, res) => {
+    const { password } = req.body ?? {};
+    const user = findUserById(db, req.user!.id);
+    if (!user || typeof password !== "string" || !verifyPassword(password, user.password_hash, user.salt)) {
+      res.status(401).json({ error: "wrong password" });
+      return;
+    }
+    deleteAccount(io, db, user.id);
     clearSessionCookie(res);
     res.json({ ok: true });
   });
