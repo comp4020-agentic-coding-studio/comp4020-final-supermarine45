@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en-AU">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Room — Shut Up and Read</title>
+    <link rel="stylesheet" href="/css/style.css" />
+  </head>
+  <body>
+    <header class="top">
+      <h1><a href="/" style="text-decoration:none;color:inherit">&larr;</a> <span id="room-name">Room</span></h1>
+      <span class="user-badge" id="user-badge"></span>
+    </header>
+    <div class="room">
+      <aside class="roster">
+        <h2>The Roster</h2>
+        <div id="roster-list"></div>
+      </aside>
+      <section class="stage">
+        <div class="phase-label" id="phase-label">IDLE</div>
+        <div class="timer idle" id="timer">25:00</div>
+        <button class="start-focus" id="start-focus">Start Focus</button>
+      </section>
+      <section class="chat" id="chat">
+        <div class="chat-log" id="chat-log"></div>
+        <form class="chat-form" id="chat-form">
+          <input id="chat-input" type="text" maxlength="500" placeholder="break chat (locked during focus)" autocomplete="off" />
+          <button type="submit">Send</button>
+        </form>
+      </section>
+    </div>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/js/room.js"></script>
+  </body>
+</html>

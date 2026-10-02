@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en-AU">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Register — Shut Up and Read</title>
+    <link rel="stylesheet" href="/css/style.css" />
+  </head>
+  <body>
+    <header class="top">
+      <h1>Shut Up and Read</h1>
+    </header>
+    <main class="auth">
+      <h2>Register</h2>
+      <form id="form">
+        <input name="username" placeholder="username (3-24, letters/digits/_/-)" autocomplete="username" required />
+        <input name="password" type="password" placeholder="password (8+ chars)" autocomplete="new-password" required />
+        <button type="submit">Create account</button>
+      </form>
+      <p class="error" id="error"></p>
+      <p>Already have one? <a href="/login">Log in</a></p>
+    </main>
+    <script>
+      document.getElementById("form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const data = Object.fromEntries(new FormData(e.target));
+        const res = await fetch("/auth/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        });
+        if (res.ok) {
+          window.location.href = "/";
+        } else {
+          const body = await res.json().catch(() => ({}));
+          document.getElementById("error").textContent = body.error ?? "registration failed";
+        }
+      });
+    </script>
+  </body>
+</html>

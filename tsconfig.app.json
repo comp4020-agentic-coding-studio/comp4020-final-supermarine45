@@ -1,0 +1,19 @@
+{
+  // Builds src/ (the app) to dist/. The root tsconfig.json is harness-only
+  // (spec/, scripts/) and stays untouched.
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "strict": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "noEmit": false,
+    "skipLibCheck": true,
+    "moduleDetection": "force",
+    "verbatimModuleSyntax": true
+  },
+  "include": ["src"]
+}
