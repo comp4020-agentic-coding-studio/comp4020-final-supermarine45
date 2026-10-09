@@ -406,17 +406,21 @@ export function castVote(io: Server, db: DatabaseSync, locationId: number, userI
   broadcastRoom(io, db, locationId);
 }
 
-// Sends a transient "spark" ping to everyone else currently in the room —
-// only while a focus block is actually running (chat itself is locked then,
-// so this is the one live signal a focused user can still send). Gated
-// server-side on both status and a per-user cooldown, independent of
-// whatever the client's own button state shows, same posture as every other
-// mutating handler in this file. Broadcast via `socket.to(...)` rather than
-// `io.to(...)` so it reaches "all other users in the room" exactly as
-// specified — the sender renders their own confirmation locally and
-// instantly on click, rather than waiting on a round trip back from the
-// server.
+// Sends a transient "spark" ping to everyone currently in the room,
+// including the sender — only while a focus block is actually running (chat
+// itself is locked then, so this is the one live signal a focused user can
+// still send). Gated server-side on both status and a per-user cooldown,
+// independent of whatever the client's own button state shows, same posture
+// as every other mutating handler in this file. Each spark carries one
+// short encouraging line picked from the same pool the periodic room-wide
+// encouragement beats draw from (randomEncouragement) — system-chosen, not
+// user-typed, so it can't become a disguised chat channel. Everyone sees
+// the identical line for a given spark, which is why this broadcasts via
+// `io.to(...)` rather than `socket.to(...)`: the message only exists once
+// the server picks it, so there's no way to give the sender a true
+// zero-round-trip local echo of it the way a hardcoded string could.
 export function sendSpark(
+  io: Server,
   socket: Socket,
   db: DatabaseSync,
   locationId: number,
@@ -431,17 +435,28 @@ export function sendSpark(
   const last = cooldowns.get(userId);
   if (last !== undefined && now - last < SPARK_COOLDOWN_MS) return false;
   cooldowns.set(userId, now);
-  socket.to(roomName(locationId)).emit("focus_spark", { username });
+  const message = randomEncouragement(db);
+  io.to(roomName(locationId)).emit("focus_spark", { username, message });
   return true;
 }
 
-// Open to anyone currently in the room when the block is in review — not
-// gated to the original starter the way resetRoom is, because adding time
-// can never be used to grief the room the way cutting a block short can.
-// Whoever extends becomes the new started_by, since starting authority
-// already means "whoever is acting now", and that keeps Reset meaningful for
-// the extended block too. Goals are kept, not cleared: extending is for
-// finishing the same unfinished list.
+// Open to anyone currently in the room, whether the block is still running
+// or already in review — not gated to the original starter the way
+// resetRoom is, because adding time can never be used to grief the room the
+// way cutting a block short can. Whoever extends becomes the new
+// started_by, since starting authority already means "whoever is acting
+// now", and that keeps Reset meaningful for the extended block too.
+//
+// The two cases need different mechanics, not just different guards. From
+// review, the prior focus phase already ended and had its minutes awarded
+// (in advancePhase), so starting a fresh phase via beginFocus — resetting
+// phase_started_at to now — is correct; goals are kept, not cleared, since
+// extending is for finishing the same unfinished list. From an
+// already-running focus block, beginFocus would be wrong: resetting
+// phase_started_at to now would make awardFocusMinutes's eventual cutoff
+// (phase_started_at + duration_ms) forget everything that elapsed before
+// the extension. So this extends phase_end_at/duration_ms in place instead,
+// leaving phase_started_at untouched — same phase, just longer.
 export function extendFocus(
   io: Server,
   db: DatabaseSync,
@@ -450,10 +465,24 @@ export function extendFocus(
   minutes: number,
 ): void {
   const state = getRoomState(db, locationId);
-  if (state.status !== "review") return;
   if (!(FOCUS_PRESETS_MIN as readonly number[]).includes(minutes)) return;
-  clearSchedule(locationId);
-  beginFocus(io, db, locationId, userId, minutes);
+  if (state.status === "review") {
+    clearSchedule(locationId);
+    beginFocus(io, db, locationId, userId, minutes);
+    return;
+  }
+  if (state.status === "focus") {
+    const newEndAt = state.phase_end_at! + minutes * 60_000;
+    const newDurationMs = newEndAt - state.phase_started_at!;
+    db.prepare(
+      "UPDATE room_state SET phase_end_at = ?, duration_ms = ?, started_by = ? WHERE location_id = ?",
+    ).run(newEndAt, newDurationMs, userId, locationId);
+    clearSchedule(locationId);
+    schedule(io, db, locationId, newEndAt - Date.now());
+    scheduleEncouragements(io, db, locationId, newEndAt - Date.now());
+    broadcastRoom(io, db, locationId);
+    broadcastLobby(io, db);
+  }
 }
 
 // Ends whatever cycle is running right now, regardless of status — awards
@@ -599,7 +628,7 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
     socket.on("focus_spark", () => {
       const user: Identity | undefined = socket.data.user;
       if (!user || joinedLocationId === null) return;
-      sendSpark(socket, db, joinedLocationId, user.id, user.username);
+      sendSpark(io, socket, db, joinedLocationId, user.id, user.username);
     });
 
     socket.on("room:goal-add", (payload?: { body?: string }) => {

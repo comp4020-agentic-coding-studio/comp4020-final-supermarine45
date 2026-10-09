@@ -721,6 +721,10 @@ button.spark-btn:disabled {
   z-index: 10;
 }
 
+#focus-extend {
+  justify-content: center;
+}
+
 button.reset-btn {
   background: transparent;
   color: var(--break);

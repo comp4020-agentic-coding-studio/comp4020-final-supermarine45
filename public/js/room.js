@@ -31,6 +31,7 @@ const goalListEl = document.getElementById("goal-list");
 const reviewBannerEl = document.getElementById("review-banner");
 const reviewUnfinishedEl = document.getElementById("review-unfinished");
 const extendPresetsEl = document.getElementById("extend-presets");
+const focusExtendEl = document.getElementById("focus-extend");
 
 let currentTimer = { status: "idle", phaseEndAt: null, durationMs: null, startedByUsername: null };
 let currentGoals = [];
@@ -151,12 +152,14 @@ socket.on("room:encouragement", ({ body }) => {
   showEncouragement(body);
 });
 
-// The server only broadcasts this to everyone *else* in the room (the
-// sender gets their own instant local feedback from the click handler
-// below), so this listener only ever fires for other people's sparks.
-socket.on("focus_spark", ({ username }) => {
+// The server broadcasts this to everyone in the room, sender included, so
+// everyone sees the identical encouraging line for a given spark — the text
+// is chosen server-side, so there's no local copy to echo instantly on
+// click the way a hardcoded string could be.
+socket.on("focus_spark", ({ username, message }) => {
   triggerSparkRing();
-  showSpark(`${username} sent a spark`);
+  const who = username === myUsername ? "You" : username;
+  showSpark(`${who} sent a spark — ${message}`);
 });
 
 socket.on("account:deleted", () => {
@@ -345,6 +348,19 @@ function renderLobbyBanner() {
   }
 }
 
+const RESET_LABELS = { focus: "Stop early", lobby: "Cancel vote", review: "Reset", break: "Reset" };
+
+function renderFocusExtendPresets() {
+  if (focusExtendEl.childElementCount > 0) return;
+  for (const minutes of presetMinutes) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = `+${minutes} min`;
+    btn.addEventListener("click", () => socket.emit("room:extend", { minutes }));
+    focusExtendEl.appendChild(btn);
+  }
+}
+
 function updateControls() {
   const locked = currentTimer.status === "focus";
   const idle = currentTimer.status === "idle";
@@ -361,11 +377,14 @@ function updateControls() {
   startLobbyButton.hidden = !idle || !signedIn || currentOccupants < 2;
   sparkButton.hidden = !locked || !signedIn;
   sparkButton.disabled = Date.now() < sparkCooldownUntil;
+  focusExtendEl.hidden = !locked || !signedIn;
+  if (locked && signedIn) renderFocusExtendPresets();
   for (const input of presetsEl.querySelectorAll("input")) {
     input.disabled = !idle;
   }
   const canReset = signedIn && !idle && currentTimer.startedByUsername === myUsername;
   resetButton.hidden = !canReset;
+  resetButton.textContent = RESET_LABELS[currentTimer.status] ?? "Reset";
   chatInput.disabled = locked || !signedIn;
   chatForm.querySelector("button").disabled = locked || !signedIn;
   chatEl.classList.toggle("locked", locked);
@@ -385,10 +404,10 @@ startLobbyButton.addEventListener("click", () => {
 sparkButton.addEventListener("click", () => {
   if (Date.now() < sparkCooldownUntil) return;
   socket.emit("focus_spark");
-  // Instant local feedback — the server only echoes this to everyone else,
-  // so the sender's own confirmation can't wait on a round trip.
-  triggerSparkRing();
-  showSpark("You sent a spark");
+  // Feedback (ripple + toast) arrives via the focus_spark listener above,
+  // once the server broadcasts back — it picks the message, so there's
+  // nothing to render here yet. Still disable immediately so a rapid
+  // second click before that broadcast arrives doesn't queue a second emit.
   sparkCooldownUntil = Date.now() + SPARK_COOLDOWN_MS;
   updateControls();
   setTimeout(updateControls, SPARK_COOLDOWN_MS + 50);

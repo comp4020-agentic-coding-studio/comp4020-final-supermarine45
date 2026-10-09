@@ -79,9 +79,20 @@ number input would turn "how long should I focus" into its own small
 procrastination. The server is the only thing that enforces the bound; a
 client that sent anything else would be ignored, the same posture as the
 chat-lock rule above. Whoever starts a block can also end it early with a
-Reset button — but only that person, not anyone else in the room, so a block
-can't be griefed by someone else in the room cutting it short. A reset still
-banks partial focus minutes for the time that did elapse.
+Reset button, labelled "Stop early" while a block is running — but only that
+person, not anyone else in the room, so a block can't be griefed by someone
+else in the room cutting it short. A reset still banks partial focus minutes
+for the time that did elapse.
+
+A running block can also be made longer, not just cut short — anyone present
+can add one of the same four presets to a block that's still actively
+running, the same "add more time" control the post-block review window
+already offers (below), just available earlier. The same asymmetry applies:
+extending is open to everyone in the room, because adding time can't be used
+to grief anyone, while stopping early stays restricted to whoever started the
+block. Extending mid-focus doesn't restart the clock — it adds the extra
+minutes onto the existing end time, so time already spent focusing is never
+forgotten.
 
 ## Planning ahead, honestly
 
@@ -181,15 +192,21 @@ the lock described above. But "no communication at all" and "no distraction"
 aren't the same requirement, so there's exactly one signal a focused user can
 still send to everyone else in the room: a spark. Clicking it fires instantly
 over the same WebSocket connection everything else in this app uses, no page
-reload, and everyone else currently in the room sees a brief glowing ripple
-around the timer and a small toast naming who sent it, fading out after two
-seconds. It carries no text and can't carry any — there's nothing to type,
-so it can't become a second chat channel in disguise. It only exists, and
-only does anything, while a focus block is actually running; the button
-itself is inert the rest of the time. It's also rate-limited to one spark
-per person every ten seconds, enforced on the server regardless of how fast
-a modified client might click, so it can't be turned into a way to spam a
-room full of people trying to concentrate.
+reload, and everyone else currently in the room — the sender included — sees
+a brief glowing ripple around the timer and a small toast naming who sent it,
+paired with one short encouraging line, fading out after two seconds. That
+line is never typed by the sender: the server picks it from the same pool of
+phrases the periodic room-wide encouragement beats already draw from, so
+whoever sent the spark and everyone who received it all see the identical
+words. A spark still carries no *user-authored* text and can't carry any —
+there's nothing for a person to type, so it can't become a second chat
+channel in disguise. It only exists, and only does anything, while a focus
+block is actually running; the button itself is inert the rest of the time.
+It's also rate-limited to one spark per person every ten seconds, enforced on
+the server regardless of how fast a modified client might click, so it can't
+be turned into a way to spam a room full of people trying to concentrate —
+and that cooldown is exactly what lets a spark be sent again and again
+through a block, not just once.
 
 ## Starting a block is a race with exactly one winner
 
