@@ -3,13 +3,15 @@
 This document defines the strict rules derived from this project's definition of "good"[cite: 1]. It outlines the standards the agent's work must meet, what the app must never do, and what tests must pass[cite: 1].
 
 ## 1. The Definition of "Good"
-Good productivity software builds long-term habits through persistent academic identity and enforces boundaries by eliminating choices. It uses digital synchronization to orchestrate physical proximity and social accountability while strictly minimizing digital distraction[cite: 1]. The app must feel alive because other real, authenticated people are studying at the same ANU location simultaneously, using that shared digital presence to drive real-world focus[cite: 1].
+Good productivity software builds long-term habits through persistent academic identity and enforces boundaries by eliminating choices. It uses digital synchronization to orchestrate physical proximity and social accountability while strictly minimizing digital distraction[cite: 1]. The app must feel alive because other real, authenticated people are studying at the same ANU location simultaneously, using that shared digital presence to drive real-world focus[cite: 1]. A block can also start by a room-wide vote instead of one person picking a preset alone — the vote resolves into a block that begins exactly on the next `:00`/`:30` wall-clock mark, so a group can coordinate a shared start time without anyone having to unilaterally decide it for everyone else. This is an additional path alongside the existing instant-start-by-preset flow, not a replacement of it.
 
 ## 2. What We MUST Build (The Standards)
 *   **Zero-Refresh Guarantee:** Any change to the timer state, user presence (join/leave), or room headcount must reflect on all connected clients within one second via WebSockets[cite: 1].
 *   **Location Strictness:** The application is hardcoded to ANU campus locations. Users cannot create custom digital rooms.
 *   **Flawless Latecomer Sync:** If a user joins an active room, they must instantly sync to the running clock. The single source of truth for time is the server.
 *   **Persistent Statistics:** User accounts must reliably accumulate and display all-time focus minutes[cite: 1].
+*   **Shadow Viewing:** An unauthenticated visitor can observe a room's live timer, roster, and chat in real time, but every mutating action is rejected server-side regardless of what the client's own UI shows.
+*   **Schelling Alignment:** A Lobby's resolved focus block always begins exactly on a `:00`/`:30` wall-clock boundary, never at an arbitrary moment relative to when the vote happened to end.
 
 ## 3. What We MUST NEVER Build (The Exclusions)
 *   **No Private Messaging:** Users cannot privately message each other. 
@@ -21,3 +23,4 @@ Every critical feature must have a test in the `spec/` folder[cite: 1]. We requi
 1.  **Latecomer Sync Check:** Test that a simulated user joining an active room receives the accurate countdown state from the server[cite: 1].
 2.  **Focus Enforcement Check:** Verify that the chat input is strictly disabled while the focus timer state is > 0[cite: 1].
 3.  **Readme Verification:** Test that the `/readme` route successfully parses and serves the `README.md` file to the DOM[cite: 1].
+4.  **Voting Resolution Check:** Verify that when a Lobby's vote resolves, the preset with the most votes wins, and a tie resolves to the shorter preset.

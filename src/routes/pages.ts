@@ -75,6 +75,7 @@ function renderShell(title: string, bodyHtml: string): string {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${title} — Shut Up and Read</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Special+Elite&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" />
     <link rel="stylesheet" href="/css/style.css" />
   </head>
   <body>

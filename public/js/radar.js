@@ -57,18 +57,65 @@ async function loadUpcoming() {
   }
 }
 
-function render(locations) {
-  locationsEl.innerHTML = "";
+// Which buildings are expanded, keyed by buildingSlug. render() rebuilds the
+// whole list on every lobby:update (someone, somewhere, changing timer
+// status), so this has to live outside render() — otherwise an accordion a
+// user opened would snap shut because of an unrelated action in another
+// building. Seeded lazily: the first render opens every building so the
+// "comprehensive list" is actually visible without extra clicks.
+let openBuildings = null;
+
+function locationRow(loc) {
+  const row = document.createElement("a");
+  row.className = "location-row";
+  row.href = `/room/${loc.slug}`;
+  const badge = loc.upcomingCount ? `<span class="planned-badge">${loc.upcomingCount} planned</span>` : "";
+  row.innerHTML = `
+    <span class="name"><span class="dot ${loc.active ? "focus" : "idle"}"></span>${loc.name}</span>
+    <span class="meta">${badge}<span class="occupants">${loc.occupants} here</span></span>
+  `;
+  return row;
+}
+
+function groupByBuilding(locations) {
+  const buildings = new Map();
   for (const loc of locations) {
-    const row = document.createElement("a");
-    row.className = "location-row";
-    row.href = `/room/${loc.slug}`;
-    const badge = loc.upcomingCount ? `<span class="planned-badge">${loc.upcomingCount} planned</span>` : "";
-    row.innerHTML = `
-      <span class="name"><span class="dot ${loc.active ? "focus" : "idle"}"></span>${loc.name}</span>
-      <span class="meta">${badge}<span class="occupants">${loc.occupants} here</span></span>
+    if (!buildings.has(loc.buildingSlug)) {
+      buildings.set(loc.buildingSlug, { slug: loc.buildingSlug, name: loc.buildingName, spaces: [] });
+    }
+    buildings.get(loc.buildingSlug).spaces.push(loc);
+  }
+  return [...buildings.values()];
+}
+
+function render(locations) {
+  const buildings = groupByBuilding(locations);
+  if (openBuildings === null) {
+    openBuildings = new Set(buildings.map((b) => b.slug));
+  }
+  locationsEl.innerHTML = "";
+  for (const building of buildings) {
+    const occupants = building.spaces.reduce((sum, s) => sum + s.occupants, 0);
+    const active = building.spaces.some((s) => s.active);
+    const details = document.createElement("details");
+    details.className = "building";
+    details.open = openBuildings.has(building.slug);
+    details.addEventListener("toggle", () => {
+      if (details.open) openBuildings.add(building.slug);
+      else openBuildings.delete(building.slug);
+    });
+    const summary = document.createElement("summary");
+    summary.className = "building-summary";
+    summary.innerHTML = `
+      <span class="name"><span class="dot ${active ? "focus" : "idle"}"></span>${building.name}</span>
+      <span class="meta"><span class="occupants">${occupants} here</span></span>
     `;
-    locationsEl.appendChild(row);
+    details.appendChild(summary);
+    const spacesEl = document.createElement("div");
+    spacesEl.className = "building-spaces";
+    for (const loc of building.spaces) spacesEl.appendChild(locationRow(loc));
+    details.appendChild(spacesEl);
+    locationsEl.appendChild(details);
   }
 }
 

@@ -28,9 +28,11 @@ export interface Location {
   id: number;
   slug: string;
   name: string;
+  buildingSlug: string;
+  buildingName: string;
 }
 
-export type RoomStatus = "idle" | "focus" | "review" | "break";
+export type RoomStatus = "idle" | "lobby" | "focus" | "review" | "break";
 
 export interface RoomState {
   location_id: number;
@@ -90,12 +92,56 @@ const SEED_ENCOURAGEMENTS: string[] = [
   "Later is not now. Now is now.",
 ];
 
-const SEED_LOCATIONS: Array<{ slug: string; name: string }> = [
-  { slug: "marie-reay", name: "Marie Reay Teaching Centre (Level 3)" },
-  { slug: "chifley", name: "Chifley Library (Floor 4)" },
-  { slug: "hancock", name: "Hancock Library (Basement)" },
-  { slug: "menzies", name: "Menzies Library" },
-  { slug: "law", name: "Law Library" },
+interface SeedLocation {
+  slug: string;
+  name: string;
+  buildingSlug: string;
+  buildingName: string;
+}
+
+// Every space is a real, walkable ANU place — hardcoded, never user-created
+// (see CLAUDE.md's Location Strictness rule). Deliberately comprehensive
+// rather than token-sized: the README used to cap this list at exactly five
+// (one per building) as its expression of "removes choices, doesn't add
+// them" — now the choice being removed is inventing or naming a room, not
+// which real space within a real building to join. A few slugs
+// (marie-reay, chifley, hancock, menzies, law) predate this list and are
+// kept as-is so existing bookmarks/tests/sessions still resolve.
+const SEED_LOCATIONS: SeedLocation[] = [
+  // Chifley Library
+  { slug: "chifley-lg", name: "Lower Ground Floor — Media & Computer Lab", buildingSlug: "chifley-library", buildingName: "Chifley Library" },
+  { slug: "chifley-ground", name: "Ground Floor — Collaborative Commons", buildingSlug: "chifley-library", buildingName: "Chifley Library" },
+  { slug: "chifley-l1", name: "Level 1 — Group Study Tables", buildingSlug: "chifley-library", buildingName: "Chifley Library" },
+  { slug: "chifley-l2", name: "Level 2 — Quiet Reading Room", buildingSlug: "chifley-library", buildingName: "Chifley Library" },
+  { slug: "chifley-l3", name: "Level 3 — Silent Study Floor", buildingSlug: "chifley-library", buildingName: "Chifley Library" },
+  { slug: "chifley", name: "Level 4 — 24-Hour Study Room", buildingSlug: "chifley-library", buildingName: "Chifley Library" },
+  // Hancock Library
+  { slug: "hancock", name: "Basement — Silent Study", buildingSlug: "hancock-library", buildingName: "Hancock Library" },
+  { slug: "hancock-ground", name: "Ground Floor — Reading Room", buildingSlug: "hancock-library", buildingName: "Hancock Library" },
+  { slug: "hancock-l1", name: "Level 1 — Group Study Pods", buildingSlug: "hancock-library", buildingName: "Hancock Library" },
+  { slug: "hancock-l2", name: "Level 2 — Quiet Floor", buildingSlug: "hancock-library", buildingName: "Hancock Library" },
+  { slug: "hancock-l3", name: "Level 3 — Postgraduate Study Area", buildingSlug: "hancock-library", buildingName: "Hancock Library" },
+  // Menzies Library
+  { slug: "menzies", name: "Ground Floor — Asia-Pacific Reading Room", buildingSlug: "menzies-library", buildingName: "Menzies Library" },
+  { slug: "menzies-l1", name: "Level 1 — Group Study Area", buildingSlug: "menzies-library", buildingName: "Menzies Library" },
+  { slug: "menzies-l2", name: "Level 2 — Silent Study Floor", buildingSlug: "menzies-library", buildingName: "Menzies Library" },
+  // Law Library
+  { slug: "law", name: "Level 1 — Main Reading Room", buildingSlug: "law-library", buildingName: "Law Library" },
+  { slug: "law-l2", name: "Level 2 — Silent Study", buildingSlug: "law-library", buildingName: "Law Library" },
+  { slug: "law-l3", name: "Level 3 — Group Discussion Rooms", buildingSlug: "law-library", buildingName: "Law Library" },
+  // Marie Reay Teaching Centre
+  { slug: "marie-reay", name: "Level 3 — Flexible Learning Space", buildingSlug: "marie-reay-teaching-centre", buildingName: "Marie Reay Teaching Centre" },
+  { slug: "marie-reay-l1", name: "Level 1 — Group Study Booths", buildingSlug: "marie-reay-teaching-centre", buildingName: "Marie Reay Teaching Centre" },
+  { slug: "marie-reay-l2", name: "Level 2 — Quiet Corner", buildingSlug: "marie-reay-teaching-centre", buildingName: "Marie Reay Teaching Centre" },
+  // Kambri Student Commons
+  { slug: "kambri-l1", name: "Level 1 — Study Hub", buildingSlug: "kambri-student-commons", buildingName: "Kambri Student Commons" },
+  { slug: "kambri-l2", name: "Level 2 — Group Pods", buildingSlug: "kambri-student-commons", buildingName: "Kambri Student Commons" },
+  { slug: "kambri-quiet", name: "Quiet Room", buildingSlug: "kambri-student-commons", buildingName: "Kambri Student Commons" },
+  // Hedley Bull Centre
+  { slug: "hedley-common", name: "Common Room — Study Area", buildingSlug: "hedley-bull-centre", buildingName: "Hedley Bull Centre" },
+  { slug: "hedley-l2", name: "Level 2 — Reading Nook", buildingSlug: "hedley-bull-centre", buildingName: "Hedley Bull Centre" },
+  // R.N. Robertson Building
+  { slug: "robertson-common", name: "Common Room — Study Area", buildingSlug: "rn-robertson-building", buildingName: "R.N. Robertson Building" },
 ];
 
 export function openDb(path: string): DatabaseSync {
@@ -181,25 +227,37 @@ function migrate(db: DatabaseSync): void {
     );
   `);
 
+  ensureColumn(db, "locations", "building_slug", "building_slug TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, "locations", "building_name", "building_name TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "users", "email", "email TEXT NOT NULL DEFAULT ''");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (email)");
   ensureColumn(db, "room_state", "duration_ms", "duration_ms INTEGER");
   ensureColumn(db, "room_state", "phase_started_at", "phase_started_at INTEGER");
 }
 
+// Insert-or-ignore per slug, rather than bailing out once any row exists, so
+// growing SEED_LOCATIONS (as this list has) adds the new spaces to an
+// already-seeded DB — prod's SQLite file lives on a persistent Fly volume,
+// not a fresh one per deploy.
 function seed(db: DatabaseSync): void {
-  const { count } = db.prepare("SELECT COUNT(*) AS count FROM locations").get() as {
-    count: number;
-  };
-  if (count > 0) return;
-
-  const insertLocation = db.prepare("INSERT INTO locations (slug, name) VALUES (?, ?)");
-  const insertRoomState = db.prepare(
-    "INSERT INTO room_state (location_id, status) VALUES (?, 'idle')",
+  const insertLocation = db.prepare(
+    "INSERT OR IGNORE INTO locations (slug, name, building_slug, building_name) VALUES (?, ?, ?, ?)",
   );
+  const insertRoomState = db.prepare(
+    "INSERT OR IGNORE INTO room_state (location_id, status) VALUES (?, 'idle')",
+  );
+  const backfillBuilding = db.prepare(
+    "UPDATE locations SET name = ?, building_slug = ?, building_name = ? " +
+      "WHERE slug = ? AND building_slug = ''",
+  );
+  const findId = db.prepare("SELECT id FROM locations WHERE slug = ?");
   for (const location of SEED_LOCATIONS) {
-    const result = insertLocation.run(location.slug, location.name);
-    insertRoomState.run(result.lastInsertRowid);
+    insertLocation.run(location.slug, location.name, location.buildingSlug, location.buildingName);
+    // Rows from before buildings existed have a blank building_slug — bring
+    // them up to date with their (possibly renamed) current seed entry.
+    backfillBuilding.run(location.name, location.buildingSlug, location.buildingName, location.slug);
+    const row = findId.get(location.slug) as unknown as { id: number };
+    insertRoomState.run(row.id);
   }
 }
 
@@ -223,12 +281,17 @@ function reconcileRoomStates(db: DatabaseSync): void {
   ).run(now);
 }
 
+const LOCATION_COLUMNS =
+  "id, slug, name, building_slug AS buildingSlug, building_name AS buildingName";
+
 export function listLocations(db: DatabaseSync): Location[] {
-  return db.prepare("SELECT id, slug, name FROM locations ORDER BY id").all() as unknown as Location[];
+  return db
+    .prepare(`SELECT ${LOCATION_COLUMNS} FROM locations ORDER BY building_name, id`)
+    .all() as unknown as Location[];
 }
 
 export function getLocationBySlug(db: DatabaseSync, slug: string): Location | undefined {
-  return db.prepare("SELECT id, slug, name FROM locations WHERE slug = ?").get(slug) as unknown as
+  return db.prepare(`SELECT ${LOCATION_COLUMNS} FROM locations WHERE slug = ?`).get(slug) as unknown as
     | Location
     | undefined;
 }

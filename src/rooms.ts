@@ -29,6 +29,36 @@ export const BREAK_DURATION_MS = 5 * 60 * 1000;
 // point ("extend or let it lapse"), not a second focus block.
 export const REVIEW_WINDOW_MS = 3 * 60 * 1000;
 
+// Schelling points: a lobby's resolved focus block always lands on a
+// wall-clock :00/:30 mark, so a group coordinating a start time converges on
+// the same mark without having to negotiate it directly.
+export const GRID_INTERVAL_MS = 30 * 60 * 1000;
+// If the next mark is only moments away, push to the one after — a lobby
+// that resolves before anyone could plausibly vote isn't a vote.
+const MIN_LOBBY_MS = 90 * 1000;
+
+export function nextGridMark(now: number): number {
+  let mark = Math.ceil(now / GRID_INTERVAL_MS) * GRID_INTERVAL_MS;
+  if (mark - now < MIN_LOBBY_MS) mark += GRID_INTERVAL_MS;
+  return mark;
+}
+
+// Highest vote count wins; a tie breaks toward the shorter preset (consistent
+// with "removes choices" — when undecided, default to less commitment, not
+// more). No votes at all falls back to the room's default preset.
+export function resolveVotes(tally: Map<number, number>): number {
+  if (tally.size === 0) return DEFAULT_FOCUS_MIN;
+  let winner = DEFAULT_FOCUS_MIN;
+  let bestCount = -1;
+  for (const [minutes, count] of [...tally.entries()].sort((a, b) => a[0] - b[0])) {
+    if (count > bestCount) {
+      bestCount = count;
+      winner = minutes;
+    }
+  }
+  return winner;
+}
+
 interface Presence {
   socketId: string;
   user: Identity;
@@ -40,6 +70,11 @@ interface TimerPayload {
   phaseEndAt: number | null;
   durationMs: number | null;
   startedByUsername: string | null;
+}
+
+export interface VoteTally {
+  minutes: number;
+  count: number;
 }
 
 interface RosterEntry {
@@ -57,6 +92,23 @@ const scheduledTransitions = new Map<number, NodeJS.Timeout>();
 // map from scheduledTransitions: these are cosmetic and never re-armed after
 // a restart, unlike the authoritative phase transition above.
 const encouragementTimers = new Map<number, NodeJS.Timeout[]>();
+// Lobby vote tallies: location_id -> user_id -> chosen minutes. In-memory
+// only, same as presence — a lost vote on restart just means the lobby falls
+// back to the default preset, no different in severity from a missed
+// encouragement beat.
+const lobbyVotes = new Map<number, Map<number, number>>();
+
+function tallyCounts(locationId: number): Map<number, number> {
+  const votes = lobbyVotes.get(locationId);
+  const counts = new Map<number, number>();
+  if (!votes) return counts;
+  for (const minutes of votes.values()) counts.set(minutes, (counts.get(minutes) ?? 0) + 1);
+  return counts;
+}
+
+function voteTally(locationId: number): VoteTally[] {
+  return [...tallyCounts(locationId).entries()].map(([minutes, count]) => ({ minutes, count }));
+}
 
 function roomName(locationId: number): string {
   return `room:${locationId}`;
@@ -113,6 +165,8 @@ function broadcastLobby(io: Server, db: DatabaseSync): void {
     return {
       slug: location.slug,
       name: location.name,
+      buildingSlug: location.buildingSlug,
+      buildingName: location.buildingName,
       occupants: occupancy(location.id),
       active: state.status === "focus",
       upcomingCount: countUpcomingSessions(db, location.id),
@@ -129,6 +183,7 @@ export function broadcastRoom(io: Server, db: DatabaseSync, locationId: number):
     roster: roster(locationId),
     upcoming: listUpcomingSessions(db, locationId),
     goals: listRoomGoals(db, locationId),
+    votes: voteTally(locationId),
   });
 }
 
@@ -236,6 +291,14 @@ function advancePhase(io: Server, db: DatabaseSync, locationId: number): void {
       "UPDATE room_state SET status = 'idle', phase_end_at = NULL, phase_started_at = NULL, " +
         "duration_ms = NULL, started_by = NULL WHERE location_id = ?",
     ).run(locationId);
+  } else if (state.status === "lobby") {
+    // The grid mark has arrived: resolve the vote and begin the block for
+    // everyone at once. started_by is always set here — only startLobby
+    // enters this status, and it always sets it to the proposer.
+    const minutes = resolveVotes(tallyCounts(locationId));
+    lobbyVotes.delete(locationId);
+    beginFocus(io, db, locationId, state.started_by!, minutes);
+    return;
   }
   broadcastRoom(io, db, locationId);
   broadcastLobby(io, db);
@@ -256,16 +319,11 @@ export function rearmTimers(io: Server, db: DatabaseSync): void {
   }
 }
 
-export function startFocus(
-  io: Server,
-  db: DatabaseSync,
-  locationId: number,
-  userId: number,
-  minutes: number,
-): void {
-  const state = getRoomState(db, locationId);
-  if (state.status !== "idle") return;
-  if (!(FOCUS_PRESETS_MIN as readonly number[]).includes(minutes)) return;
+// Shared by startFocus, extendFocus, and lobby-vote resolution: writes the
+// focus phase, arms the phase-end timer and encouragement beats, and
+// broadcasts. Callers each keep their own distinct guard (idle-only,
+// review-only, or internal-to-advancePhase) before calling this.
+function beginFocus(io: Server, db: DatabaseSync, locationId: number, userId: number, minutes: number): void {
   const now = Date.now();
   const durationMs = minutes * 60_000;
   db.prepare(
@@ -276,6 +334,50 @@ export function startFocus(
   scheduleEncouragements(io, db, locationId, durationMs);
   broadcastRoom(io, db, locationId);
   broadcastLobby(io, db);
+}
+
+export function startFocus(
+  io: Server,
+  db: DatabaseSync,
+  locationId: number,
+  userId: number,
+  minutes: number,
+): void {
+  const state = getRoomState(db, locationId);
+  if (state.status !== "idle") return;
+  if (!(FOCUS_PRESETS_MIN as readonly number[]).includes(minutes)) return;
+  beginFocus(io, db, locationId, userId, minutes);
+}
+
+// Proposes a Schelling-point lobby: the room waits until the next wall-clock
+// :00/:30 mark, during which anyone present can vote on the block length.
+// Additive to startFocus, not a replacement — a room can still start
+// instantly via a preset, same as before.
+export function startLobby(io: Server, db: DatabaseSync, locationId: number, userId: number): void {
+  const state = getRoomState(db, locationId);
+  if (state.status !== "idle") return;
+  lobbyVotes.set(locationId, new Map());
+  const now = Date.now();
+  const phaseEndAt = nextGridMark(now);
+  db.prepare(
+    "UPDATE room_state SET status = 'lobby', phase_end_at = ?, phase_started_at = ?, duration_ms = ?, " +
+      "started_by = ? WHERE location_id = ?",
+  ).run(phaseEndAt, now, phaseEndAt - now, userId, locationId);
+  schedule(io, db, locationId, phaseEndAt - now);
+  broadcastRoom(io, db, locationId);
+  broadcastLobby(io, db);
+}
+
+// Casts (or changes) this user's vote for the current lobby's block length.
+// Rejected outright outside a lobby or for a non-preset length — identical
+// posture to startFocus/extendFocus ignoring an out-of-bounds minutes value.
+export function castVote(io: Server, db: DatabaseSync, locationId: number, userId: number, minutes: number): void {
+  const state = getRoomState(db, locationId);
+  if (state.status !== "lobby") return;
+  if (!(FOCUS_PRESETS_MIN as readonly number[]).includes(minutes)) return;
+  if (!lobbyVotes.has(locationId)) lobbyVotes.set(locationId, new Map());
+  lobbyVotes.get(locationId)!.set(userId, minutes);
+  broadcastRoom(io, db, locationId);
 }
 
 // Open to anyone currently in the room when the block is in review — not
@@ -296,16 +398,7 @@ export function extendFocus(
   if (state.status !== "review") return;
   if (!(FOCUS_PRESETS_MIN as readonly number[]).includes(minutes)) return;
   clearSchedule(locationId);
-  const now = Date.now();
-  const durationMs = minutes * 60_000;
-  db.prepare(
-    "UPDATE room_state SET status = 'focus', phase_end_at = ?, phase_started_at = ?, duration_ms = ?, " +
-      "started_by = ? WHERE location_id = ?",
-  ).run(now + durationMs, now, durationMs, userId, locationId);
-  schedule(io, db, locationId, durationMs);
-  scheduleEncouragements(io, db, locationId, durationMs);
-  broadcastRoom(io, db, locationId);
-  broadcastLobby(io, db);
+  beginFocus(io, db, locationId, userId, minutes);
 }
 
 // Ends whatever cycle is running right now, regardless of status — awards
@@ -323,6 +416,7 @@ function forceEndRoom(io: Server, db: DatabaseSync, locationId: number): void {
   clearSchedule(locationId);
   clearEncouragements(locationId);
   clearRoomGoals(db, locationId);
+  lobbyVotes.delete(locationId);
   db.prepare(
     "UPDATE room_state SET status = 'idle', phase_end_at = NULL, phase_started_at = NULL, " +
       "duration_ms = NULL, started_by = NULL WHERE location_id = ?",
@@ -333,9 +427,9 @@ function forceEndRoom(io: Server, db: DatabaseSync, locationId: number): void {
 
 // Only the person who started a cycle can end it early — restricted to avoid
 // one user cutting off everyone else's focus block now that lengths vary.
-// Also allowed during review (same started_by-only check), so whoever's
-// "in charge" can bail out immediately instead of always waiting for the
-// review window to lapse. Leaving the room by navigating away remains
+// Also allowed during review and lobby (same started_by-only check), so
+// whoever's "in charge" can bail out immediately instead of always waiting
+// for the window to lapse. Leaving the room by navigating away remains
 // possible at any time regardless, for anyone — that's what "always have the
 // option to leave" actually requires, not a second in-room "quit" button.
 export function resetRoom(io: Server, db: DatabaseSync, locationId: number, userId: number): void {
@@ -378,12 +472,13 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
 
     let joinedLocationId: number | null = null;
 
+    // Shadow viewing: a socket with no user still joins the Socket.IO room
+    // and gets the same room:update/chat:history everyone else gets — it's
+    // just never added to presence, so it never appears in the roster or
+    // occupant count. Every *mutating* handler below independently checks
+    // `if (!user) return`, so this is the only gate that needed to move.
     socket.on("room:join", ({ slug }: { slug: string }) => {
       const user: Identity | undefined = socket.data.user;
-      if (!user) {
-        socket.emit("room:error", "sign in required");
-        return;
-      }
       const location: Location | undefined = getLocationBySlug(db, slug);
       if (!location) {
         socket.emit("room:error", "unknown location");
@@ -393,8 +488,10 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
 
       joinedLocationId = location.id;
       socket.join(roomName(location.id));
-      if (!presence.has(location.id)) presence.set(location.id, new Map());
-      presence.get(location.id)!.set(socket.id, { socketId: socket.id, user, joinedAt: Date.now() });
+      if (user) {
+        if (!presence.has(location.id)) presence.set(location.id, new Map());
+        presence.get(location.id)!.set(socket.id, { socketId: socket.id, user, joinedAt: Date.now() });
+      }
 
       const recentChat = db
         .prepare(
@@ -417,6 +514,18 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       const user: Identity | undefined = socket.data.user;
       if (!user || joinedLocationId === null) return;
       startFocus(io, db, joinedLocationId, user.id, payload?.minutes ?? DEFAULT_FOCUS_MIN);
+    });
+
+    socket.on("room:start-lobby", () => {
+      const user: Identity | undefined = socket.data.user;
+      if (!user || joinedLocationId === null) return;
+      startLobby(io, db, joinedLocationId, user.id);
+    });
+
+    socket.on("room:vote", (payload?: { minutes?: number }) => {
+      const user: Identity | undefined = socket.data.user;
+      if (!user || joinedLocationId === null || typeof payload?.minutes !== "number") return;
+      castVote(io, db, joinedLocationId, user.id, payload.minutes);
     });
 
     socket.on("room:reset", () => {

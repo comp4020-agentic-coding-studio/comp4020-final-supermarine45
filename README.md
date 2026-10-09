@@ -1,11 +1,12 @@
 # Shut Up and Read: ANU Focus
 
 A real-time, location-based study timer for ANU students. You sign in with a
-real account, pick one of five fixed ANU libraries, and join whoever else is
-there right now. Someone starts a 25-minute focus block; everyone in the room
-watches the same clock tick down, synced to the second, with no refresh. When
-the block ends, a 5-minute break opens the room's chat; when the next block
-starts, the chat locks again, mid-sentence if it has to.
+real account, pick a real ANU building, then a specific study space inside
+it, and join whoever else is there right now. Someone starts a 25-minute
+focus block; everyone in the room watches the same clock tick down, synced to
+the second, with no refresh. When the block ends, a 5-minute break opens the
+room's chat; when the next block starts, the chat locks again, mid-sentence
+if it has to.
 
 ## The definition of good this app is built to
 
@@ -13,14 +14,17 @@ Most "productivity" software fails by giving you more choices: more settings,
 more ways to customize a focus session until customizing it becomes the
 procrastination. This app's position is that good productivity software works
 by **removing** choices, not adding them. You cannot create a room, name a
-room, or invite someone to a private one. There are exactly five rooms,
-because there are exactly five libraries, and the whole mechanism depends on
-the room standing for a real, walkable place at ANU — Marie Reay, Chifley,
-Hancock, Menzies, Law. The room is alive because the people in it are
-provably, physically real: they are logged in with persistent accounts that
-accrue all-time focus minutes, and the timer they're watching is the same
-timer everyone else in that building is watching, driven by one clock on the
-server rather than five drifting clocks on five laptops.
+room, or invite someone to a private one — every room is one of a fixed,
+hardcoded list of real study spaces across ANU's campus buildings. The choice
+being removed is *inventing or naming a room*, not *which real, walkable
+place at ANU to join*: the list is comprehensive on purpose, grouped by
+building, so the actual space you'd walk to is on it, rather than the app
+picking a token handful of libraries for the sake of looking minimal. The
+room is alive because the people in it are provably, physically real: they
+are logged in with persistent accounts that accrue all-time focus minutes,
+and the timer they're watching is the same timer everyone else in that room
+is watching, driven by one clock on the server rather than a separate
+drifting clock on every laptop in it.
 
 That last part is a hard technical requirement, not a nicety: the server
 holds the only authoritative `phase_end_at`, an absolute timestamp rather than
@@ -98,8 +102,8 @@ it shows up immediately (read straight from the server on page load, not
 waiting on the first socket round-trip), it's counted as an "N planned" badge
 on that location from the home page, and it's listed on your own home page
 under "your upcoming sessions" regardless of which room you booked it in —
-so there's exactly one honest answer to "what have I actually booked,"
-not five rooms to check.
+so there's exactly one honest answer to "what have I actually booked," not
+every room to check individually.
 
 ## A shared goal list, and the accountability of a review window
 
@@ -142,6 +146,33 @@ row that gets deleted later. It lives only in server memory for as long as
 the process and that browser tab are both still around, under the same
 session-cookie mechanism a real login uses, so none of the room/timer/chat
 code has to know or care which kind of identity it's looking at.
+
+## Watching before you're in it
+
+Opening any room's page without being signed in at all — not even as a
+guest — still gets you a live, read-only view: the same synced timer,
+roster, and chat everyone else in the room sees, updating with no refresh,
+exactly as described above. The only thing withheld is participation —
+every action that changes room state is rejected by the server regardless
+of what a modified client might try to send. A "Join in" button converts
+a Shadow into the same randomly-named guest identity described above, with
+no separate step to type or choose a name: letting someone type a
+pseudonym at that moment would reopen the exact impersonation risk the
+random-name guarantee above exists to close.
+
+## Choosing a start time together, not just a length
+
+Starting a block doesn't have to mean one person picking a preset and
+everyone else just going along with it. Anyone in a room can instead
+propose a group vote: the block doesn't start immediately, but waits for
+the next `:00` or `:30` on the clock, and until then, anyone present can
+cast a vote for 15, 25, 45, or 50 minutes, same four presets as the regular
+start, with the live tally visible to everyone in the room. Whichever
+length has the most votes when the clock hits that mark is what the room
+gets; a tie goes to the shorter length, since nobody loses time to a group
+that can't agree. This is an additional way to start a block, not a
+replacement for the existing one — a room is never forced through a vote
+just because the feature exists.
 
 ## Deleting an account, completely
 

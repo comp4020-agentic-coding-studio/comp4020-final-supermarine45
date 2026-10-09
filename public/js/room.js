@@ -1,12 +1,18 @@
 const slug = window.location.pathname.split("/").pop();
 
 const userBadge = document.getElementById("user-badge");
+const joinInButton = document.getElementById("join-in-btn");
+const shadowNoteEl = document.getElementById("shadow-note");
 const roomNameEl = document.getElementById("room-name");
 const timerEl = document.getElementById("timer");
 const phaseLabelEl = document.getElementById("phase-label");
 const startButton = document.getElementById("start-focus");
+const startLobbyButton = document.getElementById("start-lobby");
 const resetButton = document.getElementById("reset-focus");
 const presetsEl = document.getElementById("presets");
+const lobbyBannerEl = document.getElementById("lobby-banner");
+const lobbyTimeEl = document.getElementById("lobby-time");
+const votePresetsEl = document.getElementById("vote-presets");
 const rosterListEl = document.getElementById("roster-list");
 const chatEl = document.getElementById("chat");
 const chatLogEl = document.getElementById("chat-log");
@@ -26,6 +32,8 @@ const extendPresetsEl = document.getElementById("extend-presets");
 
 let currentTimer = { status: "idle", phaseEndAt: null, durationMs: null, startedByUsername: null };
 let currentGoals = [];
+let currentVotes = [];
+let currentOccupants = 0;
 let signedIn = false;
 let myUsername = null;
 let myId = null;
@@ -51,11 +59,21 @@ async function loadUser() {
   } else {
     const link = document.createElement("a");
     link.href = "/login";
-    link.textContent = "log in to join";
+    link.textContent = "log in";
     userBadge.appendChild(link);
   }
+  joinInButton.hidden = signedIn;
+  shadowNoteEl.hidden = signedIn;
   updateControls();
 }
+
+// Mirrors the existing guest button in public/login.html exactly — a random
+// adjective+animal name, no typed pseudonym. Deliberate: a guest name is
+// never chosen, so it can never collide with or impersonate a real account.
+joinInButton.addEventListener("click", async () => {
+  await fetch("/auth/guest", { method: "POST" });
+  window.location.reload();
+});
 
 async function loadPresets() {
   const res = await fetch("/api/config");
@@ -103,11 +121,14 @@ socket.on("connect", () => {
   socket.emit("room:join", { slug });
 });
 
-socket.on("room:update", ({ timer, roster, upcoming, goals }) => {
+socket.on("room:update", ({ timer, roster, upcoming, goals, votes }) => {
   currentTimer = timer;
+  currentVotes = votes ?? [];
+  currentOccupants = roster.length;
   renderRoster(roster);
   renderSchedule(upcoming ?? []);
   renderGoals(goals ?? []);
+  renderLobbyBanner();
   updateControls();
 });
 
@@ -275,6 +296,26 @@ function renderReviewBanner() {
   }
 }
 
+function renderLobbyBanner() {
+  const inLobby = currentTimer.status === "lobby";
+  lobbyBannerEl.hidden = !inLobby;
+  if (!inLobby) return;
+  lobbyTimeEl.textContent = new Date(currentTimer.phaseEndAt).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  votePresetsEl.innerHTML = "";
+  for (const minutes of presetMinutes) {
+    const count = currentVotes.find((v) => v.minutes === minutes)?.count ?? 0;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = `${minutes}m (${count})`;
+    btn.disabled = !signedIn;
+    btn.addEventListener("click", () => socket.emit("room:vote", { minutes }));
+    votePresetsEl.appendChild(btn);
+  }
+}
+
 function updateControls() {
   const locked = currentTimer.status === "focus";
   const idle = currentTimer.status === "idle";
@@ -285,7 +326,10 @@ function updateControls() {
       ? "Focus running"
       : currentTimer.status === "review"
         ? "Reviewing goals"
-        : "On break";
+        : currentTimer.status === "lobby"
+          ? "Vote in progress"
+          : "On break";
+  startLobbyButton.hidden = !idle || !signedIn || currentOccupants < 2;
   for (const input of presetsEl.querySelectorAll("input")) {
     input.disabled = !idle;
   }
@@ -301,6 +345,10 @@ function updateControls() {
 
 startButton.addEventListener("click", () => {
   socket.emit("room:start-focus", { minutes: selectedMinutes });
+});
+
+startLobbyButton.addEventListener("click", () => {
+  socket.emit("room:start-lobby");
 });
 
 resetButton.addEventListener("click", () => {
@@ -347,25 +395,83 @@ scheduleForm.addEventListener("submit", async (e) => {
   }, 3000);
 });
 
+// A flip clock in the classic split-flap sense: each digit is a card with a
+// front/back face. set() writes the new character into whichever face is
+// currently rotated away from the viewer, then advances a running flip
+// counter to rotate the card — so the face that was hidden swings into view
+// already showing the right digit. The rotateX value is simply left to keep
+// incrementing across flips (no reset-without-transition hack needed; a
+// session's worth of flips is a harmless CSS transform number).
+class FlipDigit {
+  constructor() {
+    this.flipCount = 0;
+    this.current = null;
+    this.el = document.createElement("div");
+    this.el.className = "flip-digit";
+    this.inner = document.createElement("div");
+    this.inner.className = "flip-card-inner";
+    this.front = document.createElement("div");
+    this.front.className = "flip-card-face flip-card-front";
+    this.back = document.createElement("div");
+    this.back.className = "flip-card-face flip-card-back";
+    this.front.textContent = "0";
+    this.back.textContent = "0";
+    this.inner.append(this.front, this.back);
+    this.el.appendChild(this.inner);
+  }
+
+  set(value) {
+    if (value === this.current) return;
+    const hiddenFace = this.flipCount % 2 === 0 ? this.back : this.front;
+    hiddenFace.textContent = value;
+    this.flipCount += 1;
+    this.inner.style.transform = `rotateX(${this.flipCount * 180}deg)`;
+    this.current = value;
+  }
+}
+
+class FlipClock {
+  constructor(mount) {
+    this.minuteTens = new FlipDigit();
+    this.minuteOnes = new FlipDigit();
+    this.secondTens = new FlipDigit();
+    this.secondOnes = new FlipDigit();
+    const colon = document.createElement("div");
+    colon.className = "flip-colon";
+    colon.textContent = ":";
+    mount.append(
+      this.minuteTens.el,
+      this.minuteOnes.el,
+      colon,
+      this.secondTens.el,
+      this.secondOnes.el,
+    );
+  }
+
+  setTime(minutes, seconds) {
+    const mm = String(minutes).padStart(2, "0");
+    const ss = String(seconds).padStart(2, "0");
+    this.minuteTens.set(mm[0]);
+    this.minuteOnes.set(mm[1]);
+    this.secondTens.set(ss[0]);
+    this.secondOnes.set(ss[1]);
+  }
+}
+
+const flipClock = new FlipClock(timerEl);
+
 function tick() {
   const { status, phaseEndAt, durationMs } = currentTimer;
   phaseLabelEl.textContent = status.toUpperCase();
   timerEl.className = `timer ${status}`;
 
-  if (status === "idle" || phaseEndAt === null) {
-    timerEl.textContent = format((selectedMinutes || 25) * 60 * 1000);
-  } else {
-    const remaining = Math.max(0, phaseEndAt - Date.now());
-    timerEl.textContent = format(remaining);
-  }
+  const remainingMs =
+    status === "idle" || phaseEndAt === null
+      ? (selectedMinutes || 25) * 60 * 1000
+      : Math.max(0, phaseEndAt - Date.now());
+  const totalSeconds = Math.ceil(remainingMs / 1000);
+  flipClock.setTime(Math.floor(totalSeconds / 60), totalSeconds % 60);
   requestAnimationFrame(tick);
-}
-
-function format(ms) {
-  const totalSeconds = Math.ceil(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 requestAnimationFrame(tick);

@@ -4,57 +4,74 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Room — Shut Up and Read</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Special+Elite&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" />
     <link rel="stylesheet" href="/css/style.css" />
   </head>
   <body>
     <header class="top">
       <h1><a href="/" style="text-decoration:none;color:inherit">&larr;</a> <span id="room-name">Room</span></h1>
       <span class="user-badge" id="user-badge"></span>
+      <button class="join-in-btn" id="join-in-btn" hidden>Join in</button>
     </header>
+    <p class="shadow-note" id="shadow-note" hidden>
+      You're viewing read-only. Join in to chat, vote, and run the timer.
+    </p>
     <div class="room">
-      <aside class="roster">
-        <h2>The Roster</h2>
-        <div id="roster-list"></div>
-        <h2>Planned Sessions</h2>
-        <form class="schedule-form" id="schedule-form">
-          <input type="datetime-local" id="schedule-input" required />
-          <button type="submit">Plan</button>
-        </form>
-        <p class="error" id="schedule-error"></p>
-        <p class="note" id="schedule-note" hidden>Sign up for a real account to plan ahead.</p>
-        <div id="schedule-list"></div>
-      </aside>
-      <section class="stage">
-        <div class="phase-label" id="phase-label">IDLE</div>
-        <div class="timer idle" id="timer">25:00</div>
-        <div class="presets" id="presets"></div>
-        <button class="start-focus" id="start-focus">Start Focus</button>
-        <button class="reset-btn" id="reset-focus" hidden>Reset</button>
-        <a class="booking-link" href="https://anu.libcal.com/" target="_blank" rel="noopener">
-          Book a group study room on ANU Library's own site &#8599;
-        </a>
-        <div class="goals" id="goals">
-          <h2>Shared Goals</h2>
-          <form class="goal-form" id="goal-form" hidden>
-            <input id="goal-input" type="text" maxlength="200" placeholder="add something to focus on together" />
-            <button type="submit">Add</button>
+      <aside class="sidebar">
+        <section class="roster">
+          <h2>The Roster</h2>
+          <div id="roster-list"></div>
+        </section>
+        <details class="schedule-panel">
+          <summary>Planned Sessions</summary>
+          <form class="schedule-form" id="schedule-form">
+            <input type="datetime-local" id="schedule-input" required />
+            <button type="submit">Plan</button>
           </form>
-          <div id="goal-list"></div>
-        </div>
-        <div class="review-banner" id="review-banner" hidden>
-          <p class="review-title">Block's over. Still open:</p>
-          <div id="review-unfinished"></div>
-          <p class="review-sub">Extend to keep going, or let it lapse into break.</p>
-          <div class="extend-presets" id="extend-presets"></div>
-        </div>
-      </section>
-      <section class="chat" id="chat">
-        <div class="chat-log" id="chat-log"></div>
-        <form class="chat-form" id="chat-form">
-          <input id="chat-input" type="text" maxlength="500" placeholder="break chat (locked during focus)" autocomplete="off" />
-          <button type="submit">Send</button>
-        </form>
-      </section>
+          <p class="error" id="schedule-error"></p>
+          <p class="note" id="schedule-note" hidden>Sign up for a real account to plan ahead.</p>
+          <div id="schedule-list"></div>
+        </details>
+      </aside>
+      <div class="main-column">
+        <section class="stage">
+          <div class="phase-label" id="phase-label">IDLE</div>
+          <div class="timer idle" id="timer"></div>
+          <div class="presets" id="presets"></div>
+          <button class="start-focus" id="start-focus">Start Focus</button>
+          <button class="start-lobby" id="start-lobby" hidden>Start a group vote</button>
+          <button class="reset-btn" id="reset-focus" hidden>Reset</button>
+          <a class="booking-link" href="https://anu.libcal.com/" target="_blank" rel="noopener">
+            Book a group study room on ANU Library's own site &#8599;
+          </a>
+          <div class="lobby-banner" id="lobby-banner" hidden>
+            <p class="lobby-title">Group vote — block starts at <span id="lobby-time"></span></p>
+            <div class="vote-presets" id="vote-presets"></div>
+            <p class="lobby-sub">Most votes wins. A tie goes to the shorter length.</p>
+          </div>
+          <div class="goals" id="goals">
+            <h2>Shared Goals</h2>
+            <form class="goal-form" id="goal-form" hidden>
+              <input id="goal-input" type="text" maxlength="200" placeholder="add something to focus on together" />
+              <button type="submit">Add</button>
+            </form>
+            <div id="goal-list"></div>
+          </div>
+          <div class="review-banner" id="review-banner" hidden>
+            <p class="review-title">Block's over. Still open:</p>
+            <div id="review-unfinished"></div>
+            <p class="review-sub">Extend to keep going, or let it lapse into break.</p>
+            <div class="extend-presets" id="extend-presets"></div>
+          </div>
+        </section>
+        <section class="chat" id="chat">
+          <div class="chat-log" id="chat-log"></div>
+          <form class="chat-form" id="chat-form">
+            <input id="chat-input" type="text" maxlength="500" placeholder="break chat (locked during focus)" autocomplete="off" />
+            <button type="submit">Send</button>
+          </form>
+        </section>
+      </div>
     </div>
     <script src="/socket.io/socket.io.js"></script>
     <script src="/js/room.js"></script>
