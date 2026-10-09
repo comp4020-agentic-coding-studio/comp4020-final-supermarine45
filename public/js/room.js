@@ -8,6 +8,8 @@ const timerEl = document.getElementById("timer");
 const phaseLabelEl = document.getElementById("phase-label");
 const startButton = document.getElementById("start-focus");
 const startLobbyButton = document.getElementById("start-lobby");
+const sparkButton = document.getElementById("send-spark");
+const timerRingEl = document.getElementById("timer-ring");
 const resetButton = document.getElementById("reset-focus");
 const presetsEl = document.getElementById("presets");
 const lobbyBannerEl = document.getElementById("lobby-banner");
@@ -40,6 +42,8 @@ let myId = null;
 let myIsGuest = false;
 let selectedMinutes = 25;
 let presetMinutes = [15, 25, 45, 50];
+const SPARK_COOLDOWN_MS = 10 * 1000;
+let sparkCooldownUntil = 0;
 
 async function loadUser() {
   const res = await fetch("/api/me");
@@ -147,6 +151,14 @@ socket.on("room:encouragement", ({ body }) => {
   showEncouragement(body);
 });
 
+// The server only broadcasts this to everyone *else* in the room (the
+// sender gets their own instant local feedback from the click handler
+// below), so this listener only ever fires for other people's sparks.
+socket.on("focus_spark", ({ username }) => {
+  triggerSparkRing();
+  showSpark(`${username} sent a spark`);
+});
+
 socket.on("account:deleted", () => {
   window.location.href = "/login";
 });
@@ -157,6 +169,23 @@ function showEncouragement(body) {
   toast.textContent = body;
   document.body.appendChild(toast);
   setTimeout(() => toast.remove(), 6000);
+}
+
+function showSpark(text) {
+  const toast = document.createElement("div");
+  toast.className = "spark-toast";
+  toast.textContent = `✨ ${text}`;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 2000);
+}
+
+// Restarts the ripple even if one is already mid-animation: drop the class,
+// force a reflow so the browser forgets the old animation ran, then re-add.
+function triggerSparkRing() {
+  timerRingEl.classList.remove("spark-pulse");
+  void timerRingEl.offsetWidth;
+  timerRingEl.classList.add("spark-pulse");
+  setTimeout(() => timerRingEl.classList.remove("spark-pulse"), 2000);
 }
 
 function appendChatMessage(m) {
@@ -330,6 +359,8 @@ function updateControls() {
           ? "Vote in progress"
           : "On break";
   startLobbyButton.hidden = !idle || !signedIn || currentOccupants < 2;
+  sparkButton.hidden = !locked || !signedIn;
+  sparkButton.disabled = Date.now() < sparkCooldownUntil;
   for (const input of presetsEl.querySelectorAll("input")) {
     input.disabled = !idle;
   }
@@ -349,6 +380,18 @@ startButton.addEventListener("click", () => {
 
 startLobbyButton.addEventListener("click", () => {
   socket.emit("room:start-lobby");
+});
+
+sparkButton.addEventListener("click", () => {
+  if (Date.now() < sparkCooldownUntil) return;
+  socket.emit("focus_spark");
+  // Instant local feedback — the server only echoes this to everyone else,
+  // so the sender's own confirmation can't wait on a round trip.
+  triggerSparkRing();
+  showSpark("You sent a spark");
+  sparkCooldownUntil = Date.now() + SPARK_COOLDOWN_MS;
+  updateControls();
+  setTimeout(updateControls, SPARK_COOLDOWN_MS + 50);
 });
 
 resetButton.addEventListener("click", () => {

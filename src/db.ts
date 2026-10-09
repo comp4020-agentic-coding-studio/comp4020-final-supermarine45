@@ -165,6 +165,44 @@ function ensureColumn(db: DatabaseSync, table: string, column: string, ddl: stri
   }
 }
 
+// SQLite has no ALTER TABLE ... DROP CONSTRAINT, so removing a stale
+// REFERENCES clause means recreating the table: copy its current columns
+// (whatever they are — including any ensureColumn additions already applied
+// to this specific file) into a table built from newTableSql, then swap it
+// in. A no-op once the table no longer has the named FK, so safe to call on
+// every startup.
+function dropForeignKey(
+  db: DatabaseSync,
+  table: string,
+  fkColumn: string,
+  fkTargetTable: string,
+  newTableSql: string,
+): void {
+  const fks = db.prepare(`PRAGMA foreign_key_list(${table})`).all() as unknown as Array<{
+    from: string;
+    table: string;
+  }>;
+  if (!fks.some((fk) => fk.from === fkColumn && fk.table === fkTargetTable)) return;
+  const columns = (db.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name: string }>)
+    .map((c) => c.name)
+    .join(", ");
+  const tempTable = `__migrate_${table}`;
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.exec("BEGIN");
+  try {
+    db.exec(newTableSql.replace(new RegExp(`\\b${table}\\b`), tempTable));
+    db.prepare(`INSERT INTO ${tempTable} (${columns}) SELECT ${columns} FROM ${table}`).run();
+    db.exec(`DROP TABLE ${table}`);
+    db.exec(`ALTER TABLE ${tempTable} RENAME TO ${table}`);
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
 function migrate(db: DatabaseSync): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -193,13 +231,18 @@ function migrate(db: DatabaseSync): void {
       location_id INTEGER PRIMARY KEY REFERENCES locations(id),
       status TEXT NOT NULL DEFAULT 'idle',
       phase_end_at INTEGER,
-      started_by INTEGER REFERENCES users(id)
+      -- No REFERENCES users(id): a guest can start a block (see
+      -- resolveStartedByUsername's isGuest branch in rooms.ts), and a guest's
+      -- id is a synthetic negative number with no row in users at all.
+      started_by INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS chat_messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       location_id INTEGER NOT NULL REFERENCES locations(id),
-      user_id INTEGER NOT NULL REFERENCES users(id),
+      -- No REFERENCES users(id) for the same reason as room_state.started_by
+      -- above: guests can chat, and have no users row to reference.
+      user_id INTEGER NOT NULL,
       body TEXT NOT NULL,
       created_at INTEGER NOT NULL
     );
@@ -226,6 +269,30 @@ function migrate(db: DatabaseSync): void {
       body TEXT NOT NULL
     );
   `);
+
+  dropForeignKey(
+    db,
+    "room_state",
+    "started_by",
+    "users",
+    // Includes duration_ms/phase_started_at (added later via ensureColumn
+    // below) up front: the INSERT only copies whichever columns the live
+    // table actually has right now, so on a DB that predates those columns
+    // they're simply left NULL here and ensureColumn fills them in as usual.
+    "CREATE TABLE room_state (" +
+      "location_id INTEGER PRIMARY KEY REFERENCES locations(id), " +
+      "status TEXT NOT NULL DEFAULT 'idle', phase_end_at INTEGER, started_by INTEGER, " +
+      "duration_ms INTEGER, phase_started_at INTEGER)",
+  );
+  dropForeignKey(
+    db,
+    "chat_messages",
+    "user_id",
+    "users",
+    "CREATE TABLE chat_messages (" +
+      "id INTEGER PRIMARY KEY AUTOINCREMENT, location_id INTEGER NOT NULL REFERENCES locations(id), " +
+      "user_id INTEGER NOT NULL, body TEXT NOT NULL, created_at INTEGER NOT NULL)",
+  );
 
   ensureColumn(db, "locations", "building_slug", "building_slug TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "locations", "building_name", "building_name TEXT NOT NULL DEFAULT ''");

@@ -24,6 +24,11 @@ import {
 export const FOCUS_PRESETS_MIN = [15, 25, 45, 50] as const;
 export const DEFAULT_FOCUS_MIN = 25;
 export const BREAK_DURATION_MS = 5 * 60 * 1000;
+// Focus Spark: a wordless, no-reload nudge a focused user can send to
+// everyone else running the same block, since chat itself is locked during
+// focus. Capped to one per person per window so it can't become a second
+// chat channel.
+export const SPARK_COOLDOWN_MS = 10 * 1000;
 // Fixed window to react to an unfinished shared goal list before the room
 // moves on to break regardless — short on purpose, since it's a decision
 // point ("extend or let it lapse"), not a second focus block.
@@ -97,6 +102,11 @@ const encouragementTimers = new Map<number, NodeJS.Timeout[]>();
 // back to the default preset, no different in severity from a missed
 // encouragement beat.
 const lobbyVotes = new Map<number, Map<number, number>>();
+// Spark rate limiting: location_id -> user_id -> last-sent timestamp (ms).
+// In-memory only, same reasoning as lobbyVotes — a cooldown lost to a
+// restart just means a user could send one spark early, no different in
+// severity from a missed encouragement beat.
+const sparkCooldowns = new Map<number, Map<number, number>>();
 
 function tallyCounts(locationId: number): Map<number, number> {
   const votes = lobbyVotes.get(locationId);
@@ -336,17 +346,33 @@ function beginFocus(io: Server, db: DatabaseSync, locationId: number, userId: nu
   broadcastLobby(io, db);
 }
 
+// The Lobby Override / FIFO lock: if two users emit room:start-focus (or any
+// other mutating event) at effectively the same millisecond, Socket.IO still
+// delivers them to this one Node process as two separate events on the event
+// loop, dequeued one at a time. Every handler on the path from "read
+// room_state" to "write room_state" runs synchronously end-to-end — no
+// `await` anywhere in between, and node:sqlite's DatabaseSync is itself
+// synchronous — so whichever event is dequeued first reads "idle", writes
+// "focus", and finishes its entire handler before the second event's handler
+// ever runs. There is no window in which the second handler can observe the
+// stale "idle" status. So this guard isn't just an optimization that usually
+// wins the race: it's the lock itself, enforced by the runtime's own
+// concurrency model rather than by any mutex this code has to build. The
+// first payload to arrive always wins outright; the second is rejected here,
+// unconditionally, with no partial effect on room state. The boolean return
+// lets callers (and tests) observe which outcome happened.
 export function startFocus(
   io: Server,
   db: DatabaseSync,
   locationId: number,
   userId: number,
   minutes: number,
-): void {
+): boolean {
   const state = getRoomState(db, locationId);
-  if (state.status !== "idle") return;
-  if (!(FOCUS_PRESETS_MIN as readonly number[]).includes(minutes)) return;
+  if (state.status !== "idle") return false;
+  if (!(FOCUS_PRESETS_MIN as readonly number[]).includes(minutes)) return false;
   beginFocus(io, db, locationId, userId, minutes);
+  return true;
 }
 
 // Proposes a Schelling-point lobby: the room waits until the next wall-clock
@@ -378,6 +404,35 @@ export function castVote(io: Server, db: DatabaseSync, locationId: number, userI
   if (!lobbyVotes.has(locationId)) lobbyVotes.set(locationId, new Map());
   lobbyVotes.get(locationId)!.set(userId, minutes);
   broadcastRoom(io, db, locationId);
+}
+
+// Sends a transient "spark" ping to everyone else currently in the room —
+// only while a focus block is actually running (chat itself is locked then,
+// so this is the one live signal a focused user can still send). Gated
+// server-side on both status and a per-user cooldown, independent of
+// whatever the client's own button state shows, same posture as every other
+// mutating handler in this file. Broadcast via `socket.to(...)` rather than
+// `io.to(...)` so it reaches "all other users in the room" exactly as
+// specified — the sender renders their own confirmation locally and
+// instantly on click, rather than waiting on a round trip back from the
+// server.
+export function sendSpark(
+  socket: Socket,
+  db: DatabaseSync,
+  locationId: number,
+  userId: number,
+  username: string,
+): boolean {
+  const state = getRoomState(db, locationId);
+  if (state.status !== "focus") return false;
+  const cooldowns = sparkCooldowns.get(locationId) ?? new Map<number, number>();
+  sparkCooldowns.set(locationId, cooldowns);
+  const now = Date.now();
+  const last = cooldowns.get(userId);
+  if (last !== undefined && now - last < SPARK_COOLDOWN_MS) return false;
+  cooldowns.set(userId, now);
+  socket.to(roomName(locationId)).emit("focus_spark", { username });
+  return true;
 }
 
 // Open to anyone currently in the room when the block is in review — not
@@ -417,6 +472,7 @@ function forceEndRoom(io: Server, db: DatabaseSync, locationId: number): void {
   clearEncouragements(locationId);
   clearRoomGoals(db, locationId);
   lobbyVotes.delete(locationId);
+  sparkCooldowns.delete(locationId);
   db.prepare(
     "UPDATE room_state SET status = 'idle', phase_end_at = NULL, phase_started_at = NULL, " +
       "duration_ms = NULL, started_by = NULL WHERE location_id = ?",
@@ -538,6 +594,12 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       const user: Identity | undefined = socket.data.user;
       if (!user || joinedLocationId === null) return;
       extendFocus(io, db, joinedLocationId, user.id, payload?.minutes ?? DEFAULT_FOCUS_MIN);
+    });
+
+    socket.on("focus_spark", () => {
+      const user: Identity | undefined = socket.data.user;
+      if (!user || joinedLocationId === null) return;
+      sendSpark(socket, db, joinedLocationId, user.id, user.username);
     });
 
     socket.on("room:goal-add", (payload?: { body?: string }) => {

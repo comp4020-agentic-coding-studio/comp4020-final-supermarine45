@@ -7,6 +7,7 @@
   --panel: #d7d3c1;
   --border: #b7b198;
   --border-soft: rgba(34, 31, 25, 0.12);
+  --spark: #3f8f5c;
   --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: "IBM Plex Mono", "Roboto Mono", "Courier New", monospace;
   --display: "Special Elite", "Courier New", monospace;
@@ -517,6 +518,39 @@ header.top h1 {
   color: var(--break);
 }
 
+/* Focus Spark: a ring around the timer that ripples outward and fades, same
+   2s lifetime the brief specifies. Lives on a wrapper rather than on .timer
+   itself, since JS rewrites .timer's className every animation frame to
+   drive its idle/focus/break color — a class added there would be wiped out
+   before the next paint. */
+.timer-ring {
+  position: relative;
+  display: inline-flex;
+}
+
+.timer-ring.spark-pulse::after {
+  content: "";
+  position: absolute;
+  inset: clamp(-1.4rem, -4vw, -0.8rem);
+  border-radius: 999px;
+  border: 3px solid var(--spark);
+  pointer-events: none;
+  animation: spark-ripple 2s var(--ease);
+}
+
+@keyframes spark-ripple {
+  0% { opacity: 0.9; transform: scale(0.92); box-shadow: 0 0 0 0 rgba(63, 143, 92, 0.45); }
+  60% { opacity: 0.55; }
+  100% { opacity: 0; transform: scale(1.18); box-shadow: 0 0 0 16px rgba(63, 143, 92, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .timer-ring.spark-pulse::after {
+    animation: none;
+    opacity: 0.8;
+  }
+}
+
 .flip-colon {
   font-size: var(--digit-size);
   transform: translateY(-0.05em);
@@ -642,6 +676,49 @@ button.start-lobby:hover {
 .preset:has(input:checked) {
   border-color: var(--focus);
   color: var(--focus);
+}
+
+button.spark-btn {
+  background: transparent;
+  color: var(--spark);
+  border: 1px solid var(--spark);
+  font-weight: 700;
+  padding: 0.6rem 1.5rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+button.spark-btn:hover:not(:disabled) {
+  background: rgba(63, 143, 92, 0.1);
+}
+
+button.spark-btn:disabled {
+  color: var(--idle);
+  border-color: var(--border-soft);
+  cursor: not-allowed;
+}
+
+/* Spark toast: names who sent it, same self-dismissing pattern as the
+   encouragement toast but tinted green to stay visually distinct from it. */
+.spark-toast {
+  position: fixed;
+  bottom: 1.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--spark);
+  color: var(--fg);
+  padding: 0.65rem 1.3rem;
+  border-radius: 999px;
+  font-size: 0.9rem;
+  max-width: 90vw;
+  text-align: center;
+  box-shadow: 0 4px 16px rgba(34, 31, 25, 0.18);
+  animation: encouragement-in 0.3s ease-out;
+  z-index: 10;
 }
 
 button.reset-btn {

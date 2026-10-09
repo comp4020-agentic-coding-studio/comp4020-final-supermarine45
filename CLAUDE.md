@@ -12,6 +12,8 @@ Good productivity software builds long-term habits through persistent academic i
 *   **Persistent Statistics:** User accounts must reliably accumulate and display all-time focus minutes[cite: 1].
 *   **Shadow Viewing:** An unauthenticated visitor can observe a room's live timer, roster, and chat in real time, but every mutating action is rejected server-side regardless of what the client's own UI shows.
 *   **Schelling Alignment:** A Lobby's resolved focus block always begins exactly on a `:00`/`:30` wall-clock boundary, never at an arbitrary moment relative to when the vote happened to end.
+*   **Lobby Override (FIFO Lock):** If two users attempt to start the same room's focus timer at effectively the same millisecond, the server must process only the very first payload it receives, lock the room state, and broadcast the winning timer to every client. The second payload is rejected outright — never merged, queued, or allowed to produce a different result on a different client.
+*   **Focus Spark:** During an active focus block (when chat is locked), a user can send one transient, textless "spark" signal to everyone else in the room via WebSocket — no page reload. It renders as a brief fading visual pulse, not a message, and is rate-limited server-side to one per user every 10 seconds regardless of client-side button state.
 
 ## 3. What We MUST NEVER Build (The Exclusions)
 *   **No Private Messaging:** Users cannot privately message each other. 
@@ -24,3 +26,4 @@ Every critical feature must have a test in the `spec/` folder[cite: 1]. We requi
 2.  **Focus Enforcement Check:** Verify that the chat input is strictly disabled while the focus timer state is > 0[cite: 1].
 3.  **Readme Verification:** Test that the `/readme` route successfully parses and serves the `README.md` file to the DOM[cite: 1].
 4.  **Voting Resolution Check:** Verify that when a Lobby's vote resolves, the preset with the most votes wins, and a tie resolves to the shorter preset.
+5.  **Lobby Override Race Check:** Simulate two concurrent `room:start-focus` WebSocket emissions from two different clients; verify the server honors only the first and every connected client (including a third, non-racing observer) converges on the identical resulting room state.

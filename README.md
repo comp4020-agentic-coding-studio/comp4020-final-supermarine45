@@ -174,6 +174,40 @@ that can't agree. This is an additional way to start a block, not a
 replacement for the existing one — a room is never forced through a vote
 just because the feature exists.
 
+## A spark instead of a message, while focus is locked
+
+Chat is deliberately dead during a focus block — that's the whole point of
+the lock described above. But "no communication at all" and "no distraction"
+aren't the same requirement, so there's exactly one signal a focused user can
+still send to everyone else in the room: a spark. Clicking it fires instantly
+over the same WebSocket connection everything else in this app uses, no page
+reload, and everyone else currently in the room sees a brief glowing ripple
+around the timer and a small toast naming who sent it, fading out after two
+seconds. It carries no text and can't carry any — there's nothing to type,
+so it can't become a second chat channel in disguise. It only exists, and
+only does anything, while a focus block is actually running; the button
+itself is inert the rest of the time. It's also rate-limited to one spark
+per person every ten seconds, enforced on the server regardless of how fast
+a modified client might click, so it can't be turned into a way to spam a
+room full of people trying to concentrate.
+
+## Starting a block is a race with exactly one winner
+
+Nothing stops two different people in the same room from both reaching for
+"start" at effectively the same moment — one picking a preset instantly, the
+other proposing or resolving a lobby vote. Exactly one of those requests
+takes effect; the other is rejected outright, not merged, queued, or
+retried, and every client in the room ends up looking at the identical
+result: same length, same end time, same name in "started by." This isn't
+a lock this app had to build so much as a guarantee that already fell out of
+how the server runs: Node handles one event at a time, and the state read
+that decides "is this room actually idle right now" and the state write that
+claims it happen back-to-back with nothing in between — no `await`, nothing
+asynchronous — so the second request's handler never gets a chance to read
+a room that hasn't already been claimed by the first one. See
+`spec/lobby-override-race.test.ts` for this proven against the real running
+server, not just argued for in a comment.
+
 ## Deleting an account, completely
 
 Account deletion is behind re-entering your password, with the consequences
