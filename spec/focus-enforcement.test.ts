@@ -80,6 +80,16 @@ it("rejects chat messages while the room's focus timer is running", async () => 
     await new Promise((resolve) => setTimeout(resolve, 500));
     expect(receivedDuringFocus).toBe(false);
   } finally {
+    // Without this, the room is left mid-focus for a full 25 minutes and the
+    // next run of this test (against the same long-lived dev server) hangs:
+    // room:start-focus is idle-only, so it silently no-ops against an
+    // already-running room and the test waits forever for a "focus" update
+    // that will never come. Closing sender immediately after emit() can also
+    // drop the reset packet before it flushes, so wait for listener's own
+    // idle broadcast before closing anything.
+    const listenerSawIdle = untilStatus(listener, "idle");
+    sender.emit("room:reset");
+    await listenerSawIdle;
     sender.close();
     listener.close();
   }

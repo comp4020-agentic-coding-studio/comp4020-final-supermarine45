@@ -100,7 +100,13 @@ it("broadcasts a live, re-votable tally while a room is in its lobby", async () 
     const twentyFive = resolved.votes.find((v) => v.minutes === 25);
     expect(twentyFive?.count).toBe(1);
   } finally {
+    // Closing a immediately after emit() can tear down the connection before
+    // the reset packet actually flushes, leaving the room stuck in "lobby"
+    // for the next run against this same long-lived dev server. Waiting for
+    // b's own idle broadcast proves the reset was actually processed first.
+    const bSawIdle = untilStatus(b, "idle");
     a.emit("room:reset");
+    await bSawIdle;
     a.close();
     b.close();
   }

@@ -94,7 +94,13 @@ it("broadcasts a spark with a non-empty, system-chosen message to everyone inclu
     other.off("focus_spark", repeatListener);
     expect(repeatArrived).toBe(false);
   } finally {
+    // Closing sender immediately after emit() can drop the reset packet
+    // before it flushes, leaving the room stuck mid-focus for the next run
+    // against this same long-lived dev server — wait for other's own idle
+    // broadcast first.
+    const otherSawIdle = untilStatus(other, "idle");
     sender.emit("room:reset");
+    await otherSawIdle;
     sender.close();
     other.close();
   }
@@ -140,7 +146,14 @@ it("extends a running focus block in place, adding time rather than restarting t
     expect(extended.durationMs).toBe(original.durationMs! + 25 * 60_000);
     expect(extended.startedByUsername).toMatch(/^extend-other-/);
   } finally {
+    // extendFocus reassigns started_by to the extender (asserted above via
+    // startedByUsername), so extender is who resetRoom's owner check expects
+    // — but closing it immediately after emit() can still drop the reset
+    // packet before it flushes, so wait for starter's own idle broadcast
+    // first.
+    const starterSawIdle = untilStatus(starter, "idle");
     extender.emit("room:reset");
+    await starterSawIdle;
     starter.close();
     extender.close();
   }

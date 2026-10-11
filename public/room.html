@@ -11,15 +11,19 @@
     <header class="top">
       <h1><a href="/" style="text-decoration:none;color:inherit">&larr;</a> <span id="room-name">Room</span></h1>
       <span class="user-badge" id="user-badge"></span>
-      <button class="join-in-btn" id="join-in-btn" hidden>Join in</button>
     </header>
-    <p class="shadow-note" id="shadow-note" hidden>
-      You're viewing read-only. Join in to chat, vote, and run the timer.
-    </p>
+    <div class="reconnect-banner" id="reconnect-banner" hidden>Reconnecting&hellip;</div>
+    <div class="shadow-banner" id="shadow-note" hidden>
+      <p class="shadow-banner-text">
+        You are viewing as a Shadow. Join in to chat, vote, and run the timer.
+      </p>
+      <button class="join-in-btn" id="join-in-btn">Join In</button>
+    </div>
     <div class="room">
       <aside class="sidebar">
         <section class="roster">
           <h2>The Roster</h2>
+          <p class="occupancy-summary" id="occupancy-summary"></p>
           <div id="roster-list"></div>
         </section>
         <details class="schedule-panel">

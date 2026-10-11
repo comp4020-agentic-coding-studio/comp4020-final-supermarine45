@@ -88,7 +88,13 @@ it("lets an unauthenticated socket watch a room's live state without being able 
     const started = await untilStatus(resident, "focus");
     expect(started.timer.status).toBe("focus");
   } finally {
+    // Closing resident immediately after emit() can drop the reset packet
+    // before it flushes, leaving the room stuck mid-focus for the next run
+    // against this same long-lived dev server — wait for shadow's own idle
+    // broadcast first (it's still just watching, same as everyone else).
+    const shadowSawIdle = untilStatus(shadow, "idle");
     resident.emit("room:reset");
+    await shadowSawIdle;
     shadow.close();
     resident.close();
   }

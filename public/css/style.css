@@ -8,6 +8,12 @@
   --border: #b7b198;
   --border-soft: rgba(34, 31, 25, 0.12);
   --spark: #3f8f5c;
+  --active: #10b981;
+  --active-glow: 0 0 6px rgba(16, 185, 129, 0.65);
+  --card-bg: #f8f8f6;
+  --disabled-flat: #c9c5b4;
+  --shadow-sm: 0 2px 6px rgba(34, 31, 25, 0.1);
+  --shadow-md: 0 4px 12px rgba(34, 31, 25, 0.12);
   --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --mono: "IBM Plex Mono", "Roboto Mono", "Courier New", monospace;
   --display: "Special Elite", "Courier New", monospace;
@@ -107,11 +113,46 @@ header.top h1 {
   opacity: 0.88;
 }
 
-.shadow-note {
-  font-size: 0.8rem;
-  color: var(--idle);
+/* Fixed, persistent — unlike the self-dismissing toasts, this has to stay
+   visible for the whole outage so nobody mistakes a stalled socket for a
+   stalled timer. */
+.reconnect-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: var(--break);
+  color: #fff;
+  text-align: center;
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.shadow-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: var(--focus);
+  color: #fff;
+  padding: 0.75rem 2rem;
+}
+
+.shadow-banner-text {
   margin: 0;
-  padding: 0.6rem 2rem 0;
+  font-size: 0.9rem;
+}
+
+.shadow-banner .join-in-btn {
+  background: #fff;
+  color: var(--focus);
+  flex-shrink: 0;
+}
+
+.shadow-banner .join-in-btn:hover {
+  opacity: 0.9;
 }
 
 .dot {
@@ -128,7 +169,8 @@ header.top h1 {
 }
 
 .dot.focus {
-  background: var(--focus);
+  background: var(--active);
+  box-shadow: var(--active-glow);
 }
 
 .dot.break {
@@ -138,6 +180,58 @@ header.top h1 {
 .dot.lobby {
   background: var(--break);
   animation: pulse 2.4s ease-in-out infinite;
+}
+
+/* Wraps a roster row's .dot so the shared room clock (driven from room.js's
+   tick()) can fill an identical ring around every user at once. */
+.status-ring {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  margin-right: 0.5rem;
+  flex-shrink: 0;
+}
+
+.status-ring .dot {
+  margin-right: 0;
+}
+
+.ring-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.ring-track {
+  fill: none;
+  stroke: var(--border-soft);
+  stroke-width: 2;
+}
+
+.ring-fill {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.2s linear;
+}
+
+.ring-fill.focus {
+  stroke: var(--active);
+}
+
+.ring-fill.break,
+.ring-fill.lobby,
+.ring-fill.review {
+  stroke: var(--break);
+}
+
+.ring-fill.idle {
+  stroke: var(--border-soft);
 }
 
 @keyframes pulse {
@@ -239,17 +333,19 @@ header.top h1 {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.85rem 0.5rem;
+  padding: 0.85rem 0.9rem;
   border: none;
-  border-radius: var(--radius-sm);
-  margin-bottom: 0;
+  border-radius: 8px;
+  margin: 0.35rem;
   text-decoration: none;
   color: var(--fg);
+  background: var(--card-bg);
+  box-shadow: var(--shadow-sm);
 }
 
 .location-row:hover {
-  background: rgba(34, 31, 25, 0.05);
-  transform: translateX(2px);
+  box-shadow: var(--shadow-md);
+  transform: translate(2px, -1px);
 }
 
 .location-row .name {
@@ -264,10 +360,35 @@ header.top h1 {
   font-size: 0.85rem;
 }
 
+/* Shadows (unauthenticated viewers) — kept visually quieter than the real
+   occupant count since they aren't part of the room's accountability. */
+.observers {
+  font-family: var(--mono);
+  color: var(--border);
+  font-size: 0.8rem;
+}
+
 .location-row .meta {
   display: flex;
   align-items: center;
   gap: 0.6rem;
+}
+
+/* Sparkline: mocked "last 7 days" history next to the occupant tally —
+   see mockWeeklyMinutes/sparklineSvg in radar.js. Seeded per-location so it
+   doesn't jitter on every unrelated lobby:update re-render. */
+.sparkline {
+  flex-shrink: 0;
+}
+
+.sparkline rect {
+  fill: var(--idle);
+  opacity: 0.5;
+}
+
+.sparkline rect.spark-today {
+  fill: var(--active);
+  opacity: 1;
 }
 
 .planned-badge {
@@ -318,6 +439,7 @@ header.top h1 {
   background: var(--panel);
   border-radius: var(--radius-lg);
   padding: 1.25rem;
+  box-shadow: var(--shadow-md);
 }
 
 .roster h2 {
@@ -327,6 +449,13 @@ header.top h1 {
   letter-spacing: 0.1em;
   color: var(--break);
   margin: 0 0 0.75rem;
+}
+
+.occupancy-summary {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--idle);
+  margin: -0.5rem 0 0.75rem;
 }
 
 .roster-entry {
@@ -346,6 +475,7 @@ header.top h1 {
   background: var(--panel);
   border-radius: var(--radius-lg);
   padding: 0.25rem 1.25rem 1.1rem;
+  box-shadow: var(--shadow-md);
 }
 
 .schedule-panel summary {
@@ -485,6 +615,7 @@ header.top h1 {
   gap: 1.6rem;
   background: var(--panel);
   border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
 }
 
 /* Flip-clock timer: card-stock split-flap cards. .timer is the mount point JS
@@ -615,7 +746,7 @@ header.top h1 {
 
 button.start-focus {
   background: var(--focus);
-  color: var(--bg);
+  color: #fff;
   border: none;
   font-weight: 700;
   padding: 0.8rem 2.2rem;
@@ -624,6 +755,7 @@ button.start-focus {
   cursor: pointer;
   text-transform: uppercase;
   letter-spacing: 0.08em;
+  box-shadow: var(--shadow-sm);
 }
 
 button.start-focus:hover:not(:disabled) {
@@ -631,10 +763,13 @@ button.start-focus:hover:not(:disabled) {
   box-shadow: 0 4px 12px rgba(110, 42, 38, 0.25);
 }
 
+/* Running/locked state: flat and visibly pressed in, not just faded —
+   native `disabled` already drops pointer events/clicks on its own. */
 button.start-focus:disabled {
-  background: var(--border-soft);
+  background: var(--disabled-flat);
   color: var(--idle);
   cursor: not-allowed;
+  box-shadow: inset 0 2px 4px rgba(34, 31, 25, 0.25);
 }
 
 button.start-lobby {
@@ -710,6 +845,26 @@ button.spark-btn:disabled {
   transform: translateX(-50%);
   background: var(--panel);
   border: 1px solid var(--spark);
+  color: var(--fg);
+  padding: 0.65rem 1.3rem;
+  border-radius: 999px;
+  font-size: 0.9rem;
+  max-width: 90vw;
+  text-align: center;
+  box-shadow: 0 4px 16px rgba(34, 31, 25, 0.18);
+  animation: encouragement-in 0.3s ease-out;
+  z-index: 10;
+}
+
+/* Join/leave toast: same self-dismissing pill, neutral border since it's
+   reporting presence, not a focus/spark event. */
+.presence-toast {
+  position: fixed;
+  bottom: 1.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--idle);
   color: var(--fg);
   padding: 0.65rem 1.3rem;
   border-radius: 999px;
@@ -917,6 +1072,7 @@ button.reset-btn {
   display: flex;
   flex-direction: column;
   max-height: 240px;
+  box-shadow: var(--shadow-md);
 }
 
 .chat.locked {

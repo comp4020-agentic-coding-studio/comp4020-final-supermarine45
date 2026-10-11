@@ -24,6 +24,18 @@ function once<T = unknown>(socket: Socket, event: string): Promise<T> {
   return new Promise((resolve) => socket.once(event, resolve));
 }
 
+function untilStatus(socket: Socket, status: string): Promise<{ timer: { status: string } }> {
+  return new Promise((resolve) => {
+    const handler = (payload: { timer: { status: string } }): void => {
+      if (payload.timer.status === status) {
+        socket.off("room:update", handler);
+        resolve(payload);
+      }
+    };
+    socket.on("room:update", handler);
+  });
+}
+
 it("gives a user who joins mid-block the server's authoritative remaining time", async () => {
   const slug = "marie-reay";
   const starterCookie = await registerAndGetCookie(`starter-${randomUUID().slice(0, 8)}`);
@@ -70,6 +82,14 @@ it("gives a user who joins mid-block the server's authoritative remaining time",
       latecomer.close();
     }
   } finally {
+    // Without this, the room is left mid-focus for a full 25 minutes and the
+    // next run of this test (against the same long-lived dev server) starts
+    // from an already-running room instead of idle. Closing starter
+    // immediately after emit() can also drop the reset packet before it
+    // flushes, so wait for starter's own idle broadcast before closing it.
+    const starterSawIdle = untilStatus(starter, "idle");
+    starter.emit("room:reset");
+    await starterSawIdle;
     starter.close();
   }
 });

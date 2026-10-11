@@ -21,7 +21,7 @@ import {
   toggleRoomGoal,
 } from "./db.js";
 
-export const FOCUS_PRESETS_MIN = [15, 25, 45, 50] as const;
+export const FOCUS_PRESETS_MIN = [10, 15, 25, 45, 50] as const;
 export const DEFAULT_FOCUS_MIN = 25;
 export const BREAK_DURATION_MS = 5 * 60 * 1000;
 // Focus Spark: a wordless, no-reload nudge a focused user can send to
@@ -107,6 +107,14 @@ const lobbyVotes = new Map<number, Map<number, number>>();
 // restart just means a user could send one spark early, no different in
 // severity from a missed encouragement beat.
 const sparkCooldowns = new Map<number, Map<number, number>>();
+// Shadows (no socket.data.user) never enter `presence`, so they're invisible
+// to roster()/occupancy() — this tracks them separately, by socket id only
+// (no identity to keep), purely so the room/lobby can show "N watching".
+const shadowCounts = new Map<number, Set<string>>();
+
+function shadowCount(locationId: number): number {
+  return shadowCounts.get(locationId)?.size ?? 0;
+}
 
 function tallyCounts(locationId: number): Map<number, number> {
   const votes = lobbyVotes.get(locationId);
@@ -178,6 +186,7 @@ function broadcastLobby(io: Server, db: DatabaseSync): void {
       buildingSlug: location.buildingSlug,
       buildingName: location.buildingName,
       occupants: occupancy(location.id),
+      shadowCount: shadowCount(location.id),
       active: state.status === "focus",
       upcomingCount: countUpcomingSessions(db, location.id),
     };
@@ -191,6 +200,7 @@ export function broadcastRoom(io: Server, db: DatabaseSync, locationId: number):
   io.to(roomName(locationId)).emit("room:update", {
     timer: timerPayload(db, locationId),
     roster: roster(locationId),
+    shadowCount: shadowCount(locationId),
     upcoming: listUpcomingSessions(db, locationId),
     goals: listRoomGoals(db, locationId),
     votes: voteTally(locationId),
@@ -576,6 +586,9 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       if (user) {
         if (!presence.has(location.id)) presence.set(location.id, new Map());
         presence.get(location.id)!.set(socket.id, { socketId: socket.id, user, joinedAt: Date.now() });
+      } else {
+        if (!shadowCounts.has(location.id)) shadowCounts.set(location.id, new Set());
+        shadowCounts.get(location.id)!.add(socket.id);
       }
 
       const recentChat = db
@@ -688,6 +701,7 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
 
 function leaveRoom(io: Server, db: DatabaseSync, socket: Socket, locationId: number): void {
   presence.get(locationId)?.delete(socket.id);
+  shadowCounts.get(locationId)?.delete(socket.id);
   socket.leave(roomName(locationId));
   broadcastRoom(io, db, locationId);
   broadcastLobby(io, db);

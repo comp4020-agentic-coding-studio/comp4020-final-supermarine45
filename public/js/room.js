@@ -16,6 +16,8 @@ const lobbyBannerEl = document.getElementById("lobby-banner");
 const lobbyTimeEl = document.getElementById("lobby-time");
 const votePresetsEl = document.getElementById("vote-presets");
 const rosterListEl = document.getElementById("roster-list");
+const occupancySummaryEl = document.getElementById("occupancy-summary");
+const reconnectBannerEl = document.getElementById("reconnect-banner");
 const chatEl = document.getElementById("chat");
 const chatLogEl = document.getElementById("chat-log");
 const chatForm = document.getElementById("chat-form");
@@ -37,14 +39,31 @@ let currentTimer = { status: "idle", phaseEndAt: null, durationMs: null, started
 let currentGoals = [];
 let currentVotes = [];
 let currentOccupants = 0;
+let currentShadowCount = 0;
+// null until the first room:update arrives, so this socket's own join never
+// triggers a "joined" toast for every occupant already in the room.
+let previousRosterUsernames = null;
 let signedIn = false;
 let myUsername = null;
 let myId = null;
 let myIsGuest = false;
 let selectedMinutes = 25;
-let presetMinutes = [15, 25, 45, 50];
+let presetMinutes = [10, 15, 25, 45, 50];
 const SPARK_COOLDOWN_MS = 10 * 1000;
 let sparkCooldownUntil = 0;
+
+function appendLogoutLink(container) {
+  container.append(" · ");
+  const link = document.createElement("a");
+  link.href = "#";
+  link.textContent = "log out";
+  link.addEventListener("click", async (e) => {
+    e.preventDefault();
+    await fetch("/auth/logout", { method: "POST" });
+    window.location.href = "/";
+  });
+  container.appendChild(link);
+}
 
 async function loadUser() {
   const res = await fetch("/api/me");
@@ -59,8 +78,10 @@ async function loadUser() {
     link.href = "/account";
     link.textContent = `${user.username} · ${Math.round(user.focusMinutesTotal)} min`;
     userBadge.appendChild(link);
+    appendLogoutLink(userBadge);
   } else if (signedIn && myIsGuest) {
-    userBadge.textContent = `${user.username} · guest`;
+    userBadge.append(`${user.username} · guest`);
+    appendLogoutLink(userBadge);
   } else {
     const link = document.createElement("a");
     link.href = "/login";
@@ -83,7 +104,7 @@ joinInButton.addEventListener("click", async () => {
 async function loadPresets() {
   const res = await fetch("/api/config");
   const config = await res.json();
-  presetMinutes = config.focusPresetsMin ?? [15, 25, 45, 50];
+  presetMinutes = config.focusPresetsMin ?? [10, 15, 25, 45, 50];
   selectedMinutes = presetMinutes.includes(25) ? 25 : presetMinutes[0];
   presetsEl.innerHTML = "";
   for (const minutes of presetMinutes) {
@@ -123,14 +144,27 @@ loadInitialSchedule();
 
 const socket = io();
 socket.on("connect", () => {
+  reconnectBannerEl.hidden = true;
   socket.emit("room:join", { slug });
 });
 
-socket.on("room:update", ({ timer, roster, upcoming, goals, votes }) => {
+// Fires on an unplanned drop too, not just a page close — the Zero-Refresh
+// guarantee only covers *state*, so this is the one bit of feedback telling
+// someone they briefly fell off the shared clock. Once "connect" fires again
+// (socket.io-client retries on its own), it re-emits room:join above, which
+// resyncs to the authoritative phase_end_at — never a locally-reset timer.
+socket.on("disconnect", () => {
+  reconnectBannerEl.hidden = false;
+});
+
+socket.on("room:update", ({ timer, roster, shadowCount, upcoming, goals, votes }) => {
   currentTimer = timer;
   currentVotes = votes ?? [];
   currentOccupants = roster.length;
+  currentShadowCount = shadowCount ?? 0;
+  notifyRosterChanges(roster);
   renderRoster(roster);
+  renderOccupancySummary();
   renderSchedule(upcoming ?? []);
   renderGoals(goals ?? []);
   renderLobbyBanner();
@@ -182,6 +216,36 @@ function showSpark(text) {
   setTimeout(() => toast.remove(), 2000);
 }
 
+function showPresenceToast(text) {
+  const toast = document.createElement("div");
+  toast.className = "presence-toast";
+  toast.textContent = text;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 2500);
+}
+
+// Diffs the roster against what it looked like last room:update so a change
+// elsewhere in the room (a goal toggled, a vote cast) doesn't also spam a
+// join/leave toast for people already here.
+function notifyRosterChanges(roster) {
+  const usernames = roster.map((r) => r.username);
+  if (previousRosterUsernames !== null) {
+    for (const name of usernames) {
+      if (!previousRosterUsernames.includes(name)) showPresenceToast(`${name} joined`);
+    }
+    for (const name of previousRosterUsernames) {
+      if (!usernames.includes(name)) showPresenceToast(`${name} left`);
+    }
+  }
+  previousRosterUsernames = usernames;
+}
+
+function renderOccupancySummary() {
+  const here = `${currentOccupants} here`;
+  occupancySummaryEl.textContent =
+    currentShadowCount > 0 ? `${here} · ${currentShadowCount} watching` : here;
+}
+
 // Restarts the ripple even if one is already mid-animation: drop the class,
 // force a reflow so the browser forgets the old animation ran, then re-add.
 function triggerSparkRing() {
@@ -203,6 +267,9 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+const RING_RADIUS = 10;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+
 function renderRoster(roster) {
   rosterListEl.innerHTML = "";
   for (const entry of roster) {
@@ -212,7 +279,14 @@ function renderRoster(roster) {
       ? `<span class="guest-tag">guest</span>`
       : `<span class="score">${Math.round(entry.focusMinutesTotal)}</span>`;
     div.innerHTML = `
-      <span><span class="dot ${currentTimer.status}"></span>${escapeHtml(entry.username)}</span>
+      <span>
+        <span class="status-ring">
+          <svg class="ring-svg" viewBox="0 0 24 24">
+            <circle class="ring-track" cx="12" cy="12" r="${RING_RADIUS}"></circle>
+            <circle class="ring-fill ${currentTimer.status}" cx="12" cy="12" r="${RING_RADIUS}" stroke-dasharray="${RING_CIRCUMFERENCE}" stroke-dashoffset="${RING_CIRCUMFERENCE}"></circle>
+          </svg>
+          <span class="dot ${currentTimer.status}"></span>
+        </span>${escapeHtml(entry.username)}</span>
       ${score}
     `;
     rosterListEl.appendChild(div);
@@ -533,6 +607,15 @@ function tick() {
       : Math.max(0, phaseEndAt - Date.now());
   const totalSeconds = Math.ceil(remainingMs / 1000);
   flipClock.setTime(Math.floor(totalSeconds / 60), totalSeconds % 60);
+
+  // One shared server clock, so every roster ring fills identically — no
+  // per-user state, just one offset applied to whatever rings exist right now.
+  const filled = (status === "focus" || status === "break") && durationMs ? 1 - remainingMs / durationMs : 0;
+  const offset = RING_CIRCUMFERENCE * (1 - filled);
+  for (const ring of document.querySelectorAll(".ring-fill")) {
+    ring.style.strokeDashoffset = String(offset);
+  }
+
   requestAnimationFrame(tick);
 }
 

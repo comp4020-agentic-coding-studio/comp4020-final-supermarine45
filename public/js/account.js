@@ -7,6 +7,17 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+function appendLogoutButton() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "Log out";
+  button.addEventListener("click", async () => {
+    await fetch("/auth/logout", { method: "POST" });
+    window.location.href = "/";
+  });
+  infoEl.appendChild(button);
+}
+
 async function load() {
   const res = await fetch("/api/me");
   const user = await res.json();
@@ -17,6 +28,7 @@ async function load() {
   if (user.isGuest) {
     infoEl.innerHTML = `<p>${escapeHtml(user.username)} — anonymous guest. There's nothing to manage here, and nothing was saved.</p>`;
     dangerZoneEl.hidden = true;
+    appendLogoutButton();
     return;
   }
   infoEl.innerHTML = `
@@ -24,6 +36,7 @@ async function load() {
     <p><strong>Email</strong> ${escapeHtml(user.email ?? "")}</p>
     <p><strong>All-time focus minutes</strong> ${Math.round(user.focusMinutesTotal)}</p>
   `;
+  appendLogoutButton();
 }
 
 deleteForm.addEventListener("submit", async (e) => {

@@ -114,8 +114,15 @@ it("honors only the first of two concurrent start-timer emissions, with a unifor
     // room:reset will do anything (resetRoom is owner-gated) — emit from
     // both rather than figuring out which socket won, so the room reliably
     // ends up back at idle for the next run either way.
+    const observerSawIdle = untilStatus(observer, "idle");
     a.emit("room:reset");
     b.emit("room:reset");
+    // Closing a/b immediately after emit() can tear down the connection
+    // before the reset packet actually flushes, leaving the room stuck
+    // mid-block for the next run against this same long-lived dev server.
+    // Waiting for the observer's own idle broadcast (it never closes early)
+    // proves the reset was actually processed before any socket closes.
+    await observerSawIdle;
     a.close();
     b.close();
     observer.close();
