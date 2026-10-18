@@ -168,6 +168,37 @@ function resolveStartedByUsername(db: DatabaseSync, locationId: number, startedB
   return row?.username ?? null;
 }
 
+// Describes what a joining user walked into, for the log line only — this is
+// the "did they join mid-session" question CLAUDE.md's logging requirement
+// asks about. Based on the same absolute phase_started_at/phase_end_at the
+// latecomer-sync broadcast itself relies on, so "X minutes into a Y-minute
+// block" is exact, not an approximation from whatever the client reports.
+function joinTimingNote(db: DatabaseSync, locationId: number): string {
+  const state = getRoomState(db, locationId);
+  if (state.status === "idle") return "Room was idle.";
+  if (state.status === "lobby") return "Joined during the pre-start lobby vote.";
+  if (state.status === "review") return "Joined during the post-focus review window.";
+  if (state.status === "break") return "Joined during break.";
+  // status === "focus"
+  const elapsedMin = (Date.now() - state.phase_started_at!) / 60_000;
+  const totalMin = state.duration_ms! / 60_000;
+  return `Joined mid-session: ${elapsedMin.toFixed(1)} of ${totalMin} minutes into the focus block.`;
+}
+
+// Vote-casting handlers only carry a userId, not a socketId/Identity the way
+// most other logged actions do — this finds the matching presence entry so
+// vote log lines still read as "'username' voted ..." rather than a bare id.
+// Falls back to the id itself if the voter has since disconnected.
+function presenceIdentityLabel(locationId: number, userId: number): string {
+  const room = presence.get(locationId);
+  if (room) {
+    for (const p of room.values()) {
+      if (p.user.id === userId) return identityLabel(p.user, p.socketId);
+    }
+  }
+  return `user ${userId}`;
+}
+
 function timerPayload(db: DatabaseSync, locationId: number): TimerPayload {
   const state = getRoomState(db, locationId);
   const durationMs = state.status === "idle" ? null : state.duration_ms;
@@ -343,7 +374,17 @@ function advancePhase(io: Server, db: DatabaseSync, locationId: number): void {
     // The grid mark has arrived: resolve the vote and begin the block for
     // everyone at once. started_by is always set here — only startLobby
     // enters this status, and it always sets it to the proposer.
-    const minutes = resolveVotes(tallyCounts(locationId));
+    const tally = tallyCounts(locationId);
+    const minutes = resolveVotes(tally);
+    const breakdown = voteTally(locationId)
+      .map((v) => `${v.minutes}m: ${v.count}`)
+      .join(", ");
+    logRoomAction(
+      db,
+      locationId,
+      "lobby",
+      `vote resolved to ${minutes} minutes${breakdown ? ` (${breakdown})` : " (no votes cast, default used)"}.`,
+    );
     lobbyVotes.delete(locationId);
     beginFocus(io, db, locationId, state.started_by!, minutes);
     return;
@@ -440,7 +481,13 @@ export function castVote(io: Server, db: DatabaseSync, locationId: number, userI
   if (state.status !== "lobby") return;
   if (!(FOCUS_PRESETS_MIN as readonly number[]).includes(minutes)) return;
   if (!lobbyVotes.has(locationId)) lobbyVotes.set(locationId, new Map());
-  lobbyVotes.get(locationId)!.set(userId, minutes);
+  const votes = lobbyVotes.get(locationId)!;
+  const previous = votes.get(userId);
+  votes.set(userId, minutes);
+  const identity = presenceIdentityLabel(locationId, userId);
+  const action =
+    previous === undefined ? `voted for a ${minutes}-minute block` : `changed vote from ${previous} to ${minutes} minutes`;
+  logRoomAction(db, locationId, identity, action);
   broadcastRoom(io, db, locationId);
 }
 
@@ -705,7 +752,7 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       // a relative "time left" that would drift from when the block started.
       broadcastRoom(io, db, location.id);
       broadcastLobby(io, db);
-      logRoomAction(db, location.id, identityLabel(user, socket.id), "connected");
+      logRoomAction(db, location.id, identityLabel(user, socket.id), `connected. ${joinTimingNote(db, location.id)}`);
     });
 
     // Zero-Friction Identity (Week 11): a Shadow converts to Active in place

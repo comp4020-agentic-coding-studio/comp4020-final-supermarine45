@@ -95,10 +95,15 @@ it(
       watcher.emit("room:join", { slug });
       await once(watcher, "room:update");
 
+      // Both listeners attached before the emit — broadcastRoom reaches
+      // resident and watcher in the same tick, so registering watcher's
+      // listener only after awaiting resident's own promise risks missing it
+      // (see shadow-view.test.ts for the same reasoning).
       const residentFocus = untilStatus(resident, "focus");
+      const watcherFocus = untilStatus(watcher, "focus");
       resident.emit("room:start-focus", { minutes: 25 });
       await withTimeout(residentFocus, 10000, "resident to see focus status");
-      await withTimeout(once(watcher, "room:update"), 10000, "watcher to see focus update");
+      await withTimeout(watcherFocus, 10000, "watcher to see focus update");
 
       const sawAmber = untilRosterEntry(watcher, residentName, (e) => e.tabHidden === true);
       resident.emit("tab_hidden");
@@ -140,10 +145,16 @@ it(
       watcher.emit("room:join", { slug });
       await once(watcher, "room:update");
 
+      // watcher (not resident) starts the block, so watcher stays
+      // room:reset-eligible (resetRoom only honours the original starter)
+      // even after resident is demoted and loses write access below — the
+      // cleanup in `finally` must be able to end the room regardless of what
+      // the test is proving about resident.
       const residentFocus = untilStatus(resident, "focus");
-      resident.emit("room:start-focus", { minutes: 25 });
+      const watcherFocus = untilStatus(watcher, "focus");
+      watcher.emit("room:start-focus", { minutes: 25 });
       await withTimeout(residentFocus, 10000, "resident to see focus status");
-      await withTimeout(once(watcher, "room:update"), 10000, "watcher to see focus update");
+      await withTimeout(watcherFocus, 10000, "watcher to see focus update");
 
       const notice = once<string>(watcher, "room:notice");
       const residentGone = new Promise<void>((resolve) => {
