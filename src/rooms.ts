@@ -21,7 +21,7 @@ import {
   toggleRoomGoal,
 } from "./db.js";
 import { createPseudonymIdentity } from "./auth.js";
-import { identityLabel, logRoomAction } from "./logger.js";
+import { identityLabel, logRoomAction, logSystemAction } from "./logger.js";
 
 export const FOCUS_PRESETS_MIN = [10, 15, 25, 45, 50] as const;
 export const DEFAULT_FOCUS_MIN = 25;
@@ -752,7 +752,7 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       // a relative "time left" that would drift from when the block started.
       broadcastRoom(io, db, location.id);
       broadcastLobby(io, db);
-      logRoomAction(db, location.id, identityLabel(user, socket.id), `connected. ${joinTimingNote(db, location.id)}`);
+      logSystemAction(db, location.id, identityLabel(user, socket.id), `connected. ${joinTimingNote(db, location.id)}`);
     });
 
     // Zero-Friction Identity (Week 11): a Shadow converts to Active in place
@@ -780,7 +780,7 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
         broadcastRoom(io, db, joinedLocationId);
         broadcastLobby(io, db);
       }
-      logRoomAction(db, joinedLocationId, identityLabel(identity, socket.id), `joined as '${trimmed}'`);
+      logSystemAction(db, joinedLocationId, identityLabel(identity, socket.id), `joined as '${trimmed}'`);
       socket.emit("pseudonym:set", { token });
     });
 
@@ -931,9 +931,9 @@ function leaveRoom(io: Server, db: DatabaseSync, socket: Socket, locationId: num
   const p = presence.get(locationId)?.get(socket.id);
   if (p) {
     if (p.penaltyTimeout) clearTimeout(p.penaltyTimeout);
-    logRoomAction(db, locationId, identityLabel(p.user, socket.id), "disconnected");
+    logSystemAction(db, locationId, identityLabel(p.user, socket.id), "disconnected");
   } else {
-    logRoomAction(db, locationId, identityLabel(undefined, socket.id), "disconnected");
+    logSystemAction(db, locationId, identityLabel(undefined, socket.id), "disconnected");
   }
   presence.get(locationId)?.delete(socket.id);
   shadowCounts.get(locationId)?.delete(socket.id);

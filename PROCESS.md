@@ -16,11 +16,17 @@ Next, I would like to add logging features to log certain activities of the user
 
 (cite, cite)
 
-I decided to also implement an additional logging on the time a user joins a focus session (i.e., if they join in the middle of a session, etc).
+I also implemented additional logging to record when users join a focus session, including whether they join at the beginning or partway through an ongoing session 
 
-(cite)
+(cite prompt).
 
-as well as a logging on the voting behaviour of the users, to highlight the multi-user aspect of the prototype.
+Additionally, I introduced logging for users’ voting behaviour to better capture and analyse the multi-user dynamics of the prototype 
+
+(cite prompt).
+
+Finally, I refined the logging system to capture system status events, such as errors and warnings, and categorised the logs into three distinct types: basic session logging, feature-related logging, and system status logging. This separation improves the organisation and interpretability of the logs, making it easier to monitor user activity, understand feature usage, and identify potential system issues.
+
+(cite prompt, cite commit)
 
 Lastly, these functionalites were subsequently tested using built-in tests:
 
