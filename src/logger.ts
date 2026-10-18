@@ -13,18 +13,24 @@ export function identityLabel(user: Identity | undefined, socketId: string): str
 // mirrors every line onto disk next to the DB file, which on Fly is the one
 // path (the mounted volume) that actually persists across those.
 //
-// Split into two files: system.log for connection lifecycle (who is
-// physically present in a room, independent of what they do there) and
-// activity.log for everything a user actually *did* with a feature (voting,
-// tab-penalty, rejected attempts, chat, goals, pseudonym choice, ...). This
-// keeps "who's in the room right now" auditable on its own, separate from
-// the much noisier stream of feature-level events.
+// Three files, three concerns:
+//   - system.log:   connection lifecycle (who is physically present in a
+//                    room, independent of what they do there)
+//   - activity.log: everything a user actually *did* with a feature
+//                    (voting, tab-penalty, rejected attempts, chat, goals,
+//                    pseudonym choice, ...)
+//   - status.log:   the server's own health — startup, crashes, unexpected
+//                    errors — not tied to any one room or user
+// Keeping these apart means "who's in the room" and "did the server break"
+// aren't buried in the much noisier stream of feature-level events.
 let activityLogPath: string | null = null;
 let systemLogPath: string | null = null;
+let statusLogPath: string | null = null;
 
 export function configureLogger(dbPath: string): void {
   activityLogPath = join(dirname(dbPath), "activity.log");
   systemLogPath = join(dirname(dbPath), "system.log");
+  statusLogPath = join(dirname(dbPath), "status.log");
 }
 
 function writeLog(
@@ -51,4 +57,19 @@ export function logRoomAction(db: DatabaseSync, locationId: number | null, ident
 // room, independent of anything they do once there.
 export function logSystemAction(db: DatabaseSync, locationId: number | null, identity: string, action: string): void {
   writeLog(systemLogPath, "System", db, locationId, identity, action);
+}
+
+export type LogLevel = "INFO" | "WARN" | "ERROR";
+
+// Status logging: the server's own health, not tied to any room or user —
+// startup, shutdown, and anything unexpected (a crash, a rejected promise
+// nobody caught, a failed read). Uses the matching console method per level
+// so a WARN/ERROR actually shows up as one in a terminal or log aggregator,
+// not just as another plain console.log line.
+export function logStatus(level: LogLevel, message: string): void {
+  const line = `[${new Date().toISOString()}] [Status] [${level}] - ${message}`;
+  if (level === "ERROR") console.error(line);
+  else if (level === "WARN") console.warn(line);
+  else console.log(line);
+  if (statusLogPath) appendFileSync(statusLogPath, line + "\n");
 }
