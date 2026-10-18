@@ -363,6 +363,12 @@ export function getLocationBySlug(db: DatabaseSync, slug: string): Location | un
     | undefined;
 }
 
+export function getLocationById(db: DatabaseSync, id: number): Location | undefined {
+  return db.prepare(`SELECT ${LOCATION_COLUMNS} FROM locations WHERE id = ?`).get(id) as unknown as
+    | Location
+    | undefined;
+}
+
 export function getRoomState(db: DatabaseSync, locationId: number): RoomState {
   return db
     .prepare(

@@ -51,6 +51,17 @@ export function createGuestIdentity(): { token: string; identity: Identity } {
   return { token, identity };
 }
 
+// Same negative-id convention as createGuestIdentity, but the name is
+// caller-supplied — the pseudonym a Shadow typed in to convert to Active —
+// rather than randomly generated. Shares guestSessions, so the existing 24h
+// idle sweep already covers these too.
+export function createPseudonymIdentity(pseudonym: string): { token: string; identity: Identity } {
+  const token = randomBytes(32).toString("hex");
+  const identity: Identity = { id: nextGuestId--, username: pseudonym, focus_minutes_total: 0 };
+  guestSessions.set(token, { identity, lastSeen: Date.now() });
+  return { token, identity };
+}
+
 function guestForToken(token: string): Identity | undefined {
   const record = guestSessions.get(token);
   if (!record) return undefined;

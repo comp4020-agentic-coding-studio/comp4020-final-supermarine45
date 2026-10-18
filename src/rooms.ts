@@ -20,6 +20,8 @@ import {
   randomEncouragement,
   toggleRoomGoal,
 } from "./db.js";
+import { createPseudonymIdentity } from "./auth.js";
+import { identityLabel, logRoomAction } from "./logger.js";
 
 export const FOCUS_PRESETS_MIN = [10, 15, 25, 45, 50] as const;
 export const DEFAULT_FOCUS_MIN = 25;
@@ -33,14 +35,22 @@ export const SPARK_COOLDOWN_MS = 10 * 1000;
 // moves on to break regardless — short on purpose, since it's a decision
 // point ("extend or let it lapse"), not a second focus block.
 export const REVIEW_WINDOW_MS = 3 * 60 * 1000;
+// Programmatic honesty (Week 11): how long an Active user's tab may stay
+// hidden before the server demotes them back to Shadow. Server-timed and
+// server-enforced — the client only ever reports visibility, never the
+// verdict. See markTabHidden/applyTabPenalty.
+export const TAB_HIDDEN_PENALTY_MS = 60_000;
 
 // Schelling points: a lobby's resolved focus block always lands on a
-// wall-clock :00/:30 mark, so a group coordinating a start time converges on
-// the same mark without having to negotiate it directly.
-export const GRID_INTERVAL_MS = 30 * 60 * 1000;
+// wall-clock :00/:30-second mark, so a group coordinating a start time
+// converges on the same mark without having to negotiate it directly. Every
+// 30 seconds rather than every 30 minutes, so a room reaches a decision
+// point often enough for the vote to actually be a live group moment instead
+// of a once-a-class-period event.
+export const GRID_INTERVAL_MS = 30 * 1000;
 // If the next mark is only moments away, push to the one after — a lobby
 // that resolves before anyone could plausibly vote isn't a vote.
-const MIN_LOBBY_MS = 90 * 1000;
+const MIN_LOBBY_MS = 5 * 1000;
 
 export function nextGridMark(now: number): number {
   let mark = Math.ceil(now / GRID_INTERVAL_MS) * GRID_INTERVAL_MS;
@@ -68,6 +78,12 @@ interface Presence {
   socketId: string;
   user: Identity;
   joinedAt: number;
+  // Tab-focus telemetry (Week 11): when this user's tab last went hidden
+  // (null if currently visible/never hidden), the pending 60s demotion
+  // timeout armed when it did, and whether that timeout already fired.
+  tabHiddenAt: number | null;
+  penaltyTimeout: NodeJS.Timeout | null;
+  demoted: boolean;
 }
 
 interface TimerPayload {
@@ -87,6 +103,7 @@ interface RosterEntry {
   focusMinutesTotal: number | null;
   active: boolean;
   isGuest: boolean;
+  tabHidden: boolean;
 }
 
 // location_id -> socketId -> presence. In-memory: who's actually connected
@@ -164,16 +181,23 @@ function timerPayload(db: DatabaseSync, locationId: number): TimerPayload {
 function roster(locationId: number): RosterEntry[] {
   const room = presence.get(locationId);
   if (!room) return [];
-  return [...room.values()].map((p) => ({
-    username: p.user.username,
-    focusMinutesTotal: isGuest(p.user.id) ? null : p.user.focus_minutes_total,
-    active: true,
-    isGuest: isGuest(p.user.id),
-  }));
+  return [...room.values()]
+    .filter((p) => !p.demoted)
+    .map((p) => ({
+      username: p.user.username,
+      focusMinutesTotal: isGuest(p.user.id) ? null : p.user.focus_minutes_total,
+      active: true,
+      isGuest: isGuest(p.user.id),
+      tabHidden: p.tabHiddenAt !== null && !p.demoted,
+    }));
 }
 
 function occupancy(locationId: number): number {
-  return presence.get(locationId)?.size ?? 0;
+  const room = presence.get(locationId);
+  if (!room) return 0;
+  let count = 0;
+  for (const p of room.values()) if (!p.demoted) count += 1;
+  return count;
 }
 
 function broadcastLobby(io: Server, db: DatabaseSync): void {
@@ -226,7 +250,11 @@ function awardFocusMinutes(
   );
   for (const p of room.values()) {
     if (isGuest(p.user.id)) continue;
-    const overlapMs = cutoff - Math.max(p.joinedAt, phaseStartedAt);
+    // A demoted user's counted overlap is capped at the moment their tab
+    // went hidden — they're not wiped to zero, just not credited for time
+    // after they stopped actually being present to focus.
+    const effectiveCutoff = p.demoted && p.tabHiddenAt !== null ? Math.min(cutoff, p.tabHiddenAt) : cutoff;
+    const overlapMs = effectiveCutoff - Math.max(p.joinedAt, phaseStartedAt);
     if (overlapMs <= 0) continue;
     const minutes = overlapMs / 60_000;
     update.run(minutes, p.user.id);
@@ -561,6 +589,70 @@ export function deleteAccount(io: Server, db: DatabaseSync, userId: number): voi
   }
 }
 
+// Programmatic honesty (Week 11): a visible→hidden transition starts the
+// server-timed 60s window. Idempotent — a second tab_hidden before the
+// first clears is a no-op, so a flaky visibilitychange firing twice can't
+// restart the clock and buy more time.
+function markTabHidden(io: Server, db: DatabaseSync, locationId: number, socketId: string): void {
+  const p = presence.get(locationId)?.get(socketId);
+  if (!p || p.tabHiddenAt !== null) return;
+  p.tabHiddenAt = Date.now();
+  logRoomAction(db, locationId, identityLabel(p.user, socketId), "tab hidden. Warning broadcast. 60s timer started.");
+  broadcastRoom(io, db, locationId);
+  const timeout = setTimeout(() => applyTabPenalty(io, db, locationId, socketId), TAB_HIDDEN_PENALTY_MS);
+  timeout.unref();
+  p.penaltyTimeout = timeout;
+}
+
+// Returning before the deadline clears the warning outright — no partial
+// penalty, no record kept once visible again.
+function clearTabHidden(io: Server, db: DatabaseSync, locationId: number, socketId: string): void {
+  const p = presence.get(locationId)?.get(socketId);
+  if (!p || p.tabHiddenAt === null || p.demoted) return;
+  if (p.penaltyTimeout) clearTimeout(p.penaltyTimeout);
+  p.penaltyTimeout = null;
+  p.tabHiddenAt = null;
+  logRoomAction(db, locationId, identityLabel(p.user, socketId), "tab visible again. Warning cleared.");
+  broadcastRoom(io, db, locationId);
+}
+
+// Fires only if TAB_HIDDEN_PENALTY_MS elapsed with no tab_visible in
+// between (clearTabHidden would have cancelled this timeout otherwise).
+// Demotes the presence entry back to Shadow: cleared from socket.data.user
+// so every existing `if (!user) ...` guard below now correctly rejects
+// this socket for free, moved into shadowCounts so it still shows as
+// "watching", and filtered out of roster()/occupancy() immediately. The
+// entry itself is kept (not deleted) so awardFocusMinutes can still find it
+// and credit only up to tabHiddenAt.
+function applyTabPenalty(io: Server, db: DatabaseSync, locationId: number, socketId: string): void {
+  const p = presence.get(locationId)?.get(socketId);
+  if (!p || p.demoted) return;
+  p.demoted = true;
+  p.penaltyTimeout = null;
+  const socket = io.sockets.sockets.get(socketId);
+  if (socket) socket.data.user = undefined;
+  if (!shadowCounts.has(locationId)) shadowCounts.set(locationId, new Set());
+  shadowCounts.get(locationId)!.add(socketId);
+  logRoomAction(db, locationId, identityLabel(p.user, socketId), "60s penalty reached. User demoted.");
+  io.to(roomName(locationId)).emit("room:notice", `${p.user.username} lost focus and was removed.`);
+  broadcastRoom(io, db, locationId);
+  broadcastLobby(io, db);
+}
+
+// Server-Side Authority (Week 11): every mutating handler's guard calls this
+// on rejection instead of silently dropping the event, so an unauthorized
+// attempt gets an explicit payload back and a logged line, not just nothing.
+function rejectUnauthorized(
+  io: Server,
+  db: DatabaseSync,
+  socket: Socket,
+  locationId: number | null,
+  action: string,
+): void {
+  socket.emit("room:unauthorized", { error: "unauthorized", action });
+  logRoomAction(db, locationId, identityLabel(socket.data.user, socket.id), `attempted unauthorized ${action}. Rejected.`);
+}
+
 export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
   io.on("connection", (socket: Socket) => {
     socket.join("lobby");
@@ -585,7 +677,14 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       socket.join(roomName(location.id));
       if (user) {
         if (!presence.has(location.id)) presence.set(location.id, new Map());
-        presence.get(location.id)!.set(socket.id, { socketId: socket.id, user, joinedAt: Date.now() });
+        presence.get(location.id)!.set(socket.id, {
+          socketId: socket.id,
+          user,
+          joinedAt: Date.now(),
+          tabHiddenAt: null,
+          penaltyTimeout: null,
+          demoted: false,
+        });
       } else {
         if (!shadowCounts.has(location.id)) shadowCounts.set(location.id, new Set());
         shadowCounts.get(location.id)!.add(socket.id);
@@ -606,47 +705,120 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       // a relative "time left" that would drift from when the block started.
       broadcastRoom(io, db, location.id);
       broadcastLobby(io, db);
+      logRoomAction(db, location.id, identityLabel(user, socket.id), "connected");
+    });
+
+    // Zero-Friction Identity (Week 11): a Shadow converts to Active in place
+    // by typing a pseudonym, no password or page reload needed for the
+    // conversion itself — only the one follow-up cookie-adoption request so
+    // this identity survives a refresh. Mirrors createGuestIdentity's
+    // negative-id convention exactly, just with a caller-chosen name.
+    socket.on("set_pseudonym", (payload?: { pseudonym?: string }) => {
+      if (socket.data.user) return; // already Active — nothing to convert
+      const trimmed = (payload?.pseudonym ?? "").trim().slice(0, 24);
+      if (!trimmed) return;
+      const { token, identity } = createPseudonymIdentity(trimmed);
+      socket.data.user = identity;
+      if (joinedLocationId !== null) {
+        shadowCounts.get(joinedLocationId)?.delete(socket.id);
+        if (!presence.has(joinedLocationId)) presence.set(joinedLocationId, new Map());
+        presence.get(joinedLocationId)!.set(socket.id, {
+          socketId: socket.id,
+          user: identity,
+          joinedAt: Date.now(),
+          tabHiddenAt: null,
+          penaltyTimeout: null,
+          demoted: false,
+        });
+        broadcastRoom(io, db, joinedLocationId);
+        broadcastLobby(io, db);
+      }
+      logRoomAction(db, joinedLocationId, identityLabel(identity, socket.id), `joined as '${trimmed}'`);
+      socket.emit("pseudonym:set", { token });
+    });
+
+    // Live Accountability (Week 11): the client reports Page Visibility
+    // changes verbatim; the server alone decides what a hidden tab means
+    // (an amber warning now, demotion if it doesn't clear within
+    // TAB_HIDDEN_PENALTY_MS) via markTabHidden/clearTabHidden below.
+    socket.on("tab_hidden", () => {
+      const user: Identity | undefined = socket.data.user;
+      if (!user || joinedLocationId === null) {
+        rejectUnauthorized(io, db, socket, joinedLocationId, "tab_hidden");
+        return;
+      }
+      markTabHidden(io, db, joinedLocationId, socket.id);
+    });
+
+    socket.on("tab_visible", () => {
+      const user: Identity | undefined = socket.data.user;
+      if (!user || joinedLocationId === null) {
+        rejectUnauthorized(io, db, socket, joinedLocationId, "tab_visible");
+        return;
+      }
+      clearTabHidden(io, db, joinedLocationId, socket.id);
     });
 
     socket.on("room:start-focus", (payload?: { minutes?: number }) => {
       const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) return;
+      if (!user || joinedLocationId === null) {
+        rejectUnauthorized(io, db, socket, joinedLocationId, "room:start-focus");
+        return;
+      }
       startFocus(io, db, joinedLocationId, user.id, payload?.minutes ?? DEFAULT_FOCUS_MIN);
     });
 
     socket.on("room:start-lobby", () => {
       const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) return;
+      if (!user || joinedLocationId === null) {
+        rejectUnauthorized(io, db, socket, joinedLocationId, "room:start-lobby");
+        return;
+      }
       startLobby(io, db, joinedLocationId, user.id);
     });
 
     socket.on("room:vote", (payload?: { minutes?: number }) => {
       const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null || typeof payload?.minutes !== "number") return;
+      if (!user || joinedLocationId === null || typeof payload?.minutes !== "number") {
+        rejectUnauthorized(io, db, socket, joinedLocationId, "room:vote");
+        return;
+      }
       castVote(io, db, joinedLocationId, user.id, payload.minutes);
     });
 
     socket.on("room:reset", () => {
       const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) return;
+      if (!user || joinedLocationId === null) {
+        rejectUnauthorized(io, db, socket, joinedLocationId, "room:reset");
+        return;
+      }
       resetRoom(io, db, joinedLocationId, user.id);
     });
 
     socket.on("room:extend", (payload?: { minutes?: number }) => {
       const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) return;
+      if (!user || joinedLocationId === null) {
+        rejectUnauthorized(io, db, socket, joinedLocationId, "room:extend");
+        return;
+      }
       extendFocus(io, db, joinedLocationId, user.id, payload?.minutes ?? DEFAULT_FOCUS_MIN);
     });
 
     socket.on("focus_spark", () => {
       const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) return;
+      if (!user || joinedLocationId === null) {
+        rejectUnauthorized(io, db, socket, joinedLocationId, "focus_spark");
+        return;
+      }
       sendSpark(io, socket, db, joinedLocationId, user.id, user.username);
     });
 
     socket.on("room:goal-add", (payload?: { body?: string }) => {
       const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) return;
+      if (!user || joinedLocationId === null) {
+        rejectUnauthorized(io, db, socket, joinedLocationId, "room:goal-add");
+        return;
+      }
       const state = getRoomState(db, joinedLocationId);
       if (state.status !== "idle") return;
       const trimmed = (payload?.body ?? "").trim().slice(0, 200);
@@ -657,14 +829,20 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
 
     socket.on("room:goal-toggle", (payload?: { id?: number }) => {
       const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null || typeof payload?.id !== "number") return;
+      if (!user || joinedLocationId === null || typeof payload?.id !== "number") {
+        rejectUnauthorized(io, db, socket, joinedLocationId, "room:goal-toggle");
+        return;
+      }
       toggleRoomGoal(db, payload.id, joinedLocationId);
       broadcastRoom(io, db, joinedLocationId);
     });
 
     socket.on("room:goal-delete", (payload?: { id?: number }) => {
       const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null || typeof payload?.id !== "number") return;
+      if (!user || joinedLocationId === null || typeof payload?.id !== "number") {
+        rejectUnauthorized(io, db, socket, joinedLocationId, "room:goal-delete");
+        return;
+      }
       const state = getRoomState(db, joinedLocationId);
       if (state.status !== "idle") return;
       if (!deleteRoomGoal(db, payload.id, user.id)) return;
@@ -673,7 +851,10 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
 
     socket.on("chat:send", ({ body }: { body: string }) => {
       const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) return;
+      if (!user || joinedLocationId === null) {
+        rejectUnauthorized(io, db, socket, joinedLocationId, "chat:send");
+        return;
+      }
       const state = getRoomState(db, joinedLocationId);
       // Enforced here, server-side, regardless of what the sender's own UI
       // shows — a client that ignores its own disabled input still can't
@@ -700,6 +881,13 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
 }
 
 function leaveRoom(io: Server, db: DatabaseSync, socket: Socket, locationId: number): void {
+  const p = presence.get(locationId)?.get(socket.id);
+  if (p) {
+    if (p.penaltyTimeout) clearTimeout(p.penaltyTimeout);
+    logRoomAction(db, locationId, identityLabel(p.user, socket.id), "disconnected");
+  } else {
+    logRoomAction(db, locationId, identityLabel(undefined, socket.id), "disconnected");
+  }
   presence.get(locationId)?.delete(socket.id);
   shadowCounts.get(locationId)?.delete(socket.id);
   socket.leave(roomName(locationId));

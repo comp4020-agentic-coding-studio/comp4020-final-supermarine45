@@ -78,6 +78,22 @@ export function authRouter(db: DatabaseSync, io: Server): Router {
     res.status(201).json({ username: identity.username });
   });
 
+  // The only caller is the client that just received this exact token from
+  // its own socket a moment earlier, after set_pseudonym — a WebSocket
+  // handler has no Response to set a cookie on, so this tiny HTTP endpoint
+  // bridges the two. A bogus/foreign token just fails to resolve later in
+  // identityForToken, same as any invalid cookie today — no new privilege
+  // surface.
+  router.post("/adopt-session", (req, res) => {
+    const { token } = req.body ?? {};
+    if (typeof token !== "string") {
+      res.status(400).json({ error: "token required" });
+      return;
+    }
+    setSessionCookie(res, token);
+    res.json({ ok: true });
+  });
+
   router.post("/logout", (req, res) => {
     const token = sessionTokenFromCookieHeader(req.headers.cookie);
     if (token) {

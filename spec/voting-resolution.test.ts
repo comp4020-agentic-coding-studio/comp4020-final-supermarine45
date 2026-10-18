@@ -51,10 +51,29 @@ function untilVoteCount(socket: Socket, minutes: number, count: number): Promise
   });
 }
 
-// The winner-selection logic is the part a 30-minute real grid mark makes
-// impractical to exercise end-to-end in a fast test, so it's pulled out as a
-// pure function and asserted directly: highest count wins, and a tie breaks
-// toward the shorter preset rather than toward whoever voted first.
+// See spec/concurrent-edits.test.ts for why this is capped: an unbounded
+// wait here would hang this test's own cleanup forever if the room was ever
+// left wedged by something other than this run.
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms waiting for ${label}`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+// The winner-selection logic is still pulled out as a pure function and
+// asserted directly, rather than only through the live end-to-end test
+// below: highest count wins, and a tie breaks toward the shorter preset
+// rather than toward whoever voted first.
 it("resolves a vote tally to the highest count, breaking ties toward the shorter preset", () => {
   expect(resolveVotes(new Map([[25, 3], [45, 1]]))).toBe(25);
   expect(resolveVotes(new Map([[15, 2], [50, 2]]))).toBe(15);
@@ -100,13 +119,11 @@ it("broadcasts a live, re-votable tally while a room is in its lobby", async () 
     const twentyFive = resolved.votes.find((v) => v.minutes === 25);
     expect(twentyFive?.count).toBe(1);
   } finally {
-    // Closing a immediately after emit() can tear down the connection before
-    // the reset packet actually flushes, leaving the room stuck in "lobby"
-    // for the next run against this same long-lived dev server. Waiting for
-    // b's own idle broadcast proves the reset was actually processed first.
-    const bSawIdle = untilStatus(b, "idle");
+    // Waiting for b's own idle broadcast proves the reset was actually
+    // processed before closing — but bounded, since an unbounded wait would
+    // hang this cleanup forever if a somehow isn't the room's started_by.
     a.emit("room:reset");
-    await bSawIdle;
+    await withTimeout(untilStatus(b, "idle"), 3000, "room to confirm reset").catch(() => {});
     a.close();
     b.close();
   }

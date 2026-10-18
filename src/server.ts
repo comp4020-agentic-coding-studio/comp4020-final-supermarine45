@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { attachUser, userFromSocketCookie } from "./auth.js";
 import { openDb } from "./db.js";
+import { configureLogger } from "./logger.js";
 import { authRouter } from "./routes/auth.js";
 import { pagesRouter } from "./routes/pages.js";
 import { scheduleRouter } from "./routes/schedule.js";
@@ -13,6 +14,7 @@ const DB_PATH = process.env.DB_PATH ?? "./data/app.db";
 const README_PATH = process.env.README_PATH ?? "./README.md";
 
 const db = openDb(DB_PATH);
+configureLogger(DB_PATH);
 
 const app = express();
 // Created before routes are mounted so scheduleRouter can close over io to

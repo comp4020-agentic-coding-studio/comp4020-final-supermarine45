@@ -1,239 +1,73 @@
 # Shut Up and Read: ANU Focus
 
-A real-time, location-based study timer for ANU students. You sign in with a
-real account, pick a real ANU building, then a specific study space inside
-it, and join whoever else is there right now. Someone starts a 25-minute
-focus block; everyone in the room watches the same clock tick down, synced to
-the second, with no refresh. When the block ends, a 5-minute break opens the
-room's chat; when the next block starts, the chat locks again, mid-sentence
-if it has to.
+A real-time, location-based study timer for ANU students. Sign in, pick a
+real ANU building and study space, and join whoever else is there now.
+Someone starts a focus block; everyone watches the same clock tick down,
+synced to the second, with no refresh. A 5-minute break opens the room's chat
+when it ends; the next block locks it again mid-sentence if it has to.
 
 ## The definition of good this app is built to
 
-Most "productivity" software fails by giving you more choices: more settings,
-more ways to customize a focus session until customizing it becomes the
-procrastination. This app's position is that good productivity software works
-by **removing** choices, not adding them. You cannot create a room, name a
-room, or invite someone to a private one — every room is one of a fixed,
-hardcoded list of real study spaces across ANU's campus buildings. The choice
-being removed is *inventing or naming a room*, not *which real, walkable
-place at ANU to join*: the list is comprehensive on purpose, grouped by
-building, so the actual space you'd walk to is on it, rather than the app
-picking a token handful of libraries for the sake of looking minimal. The
-room is alive because the people in it are provably, physically real: they
-are logged in with persistent accounts that accrue all-time focus minutes,
-and the timer they're watching is the same timer everyone else in that room
-is watching, driven by one clock on the server rather than a separate
-drifting clock on every laptop in it.
+Most "productivity" software fails by giving you more choices — more
+settings, more ways to customize until customizing becomes the
+procrastination. This app works by **removing** choices instead: you cannot
+create, name, or invite someone to a private room — every room is one of a
+fixed, hardcoded list of real ANU study spaces, alive because everyone in it
+is a provably real, logged-in account watching one clock the server drives,
+not a separate drifting clock per laptop. The server alone holds
+`phase_end_at`, so joining mid-block returns the true remaining time, never a
+freshly-restarted countdown.
 
-That last part is a hard technical requirement, not a nicety: the server
-holds the only authoritative `phase_end_at`, an absolute timestamp rather than
-a countdown. A client that joins four seconds into a block, or four minutes
-into a dropped-and-restored connection, asks the server what time it is and
-gets back the real remaining time — not a freshly-restarted 25:00, which
-would be a lie about how far along the room actually is. That lie is exactly
-what a late-joining user needs to *not* see for the "shared presence" premise
-to mean anything.
+Good accountability software also knows when you are distracted, not just
+when you admit it. The room removes the honor system by using programmatic
+honesty — the Page Visibility API reporting a hidden tab straight to the
+server — to visually signal to the rest of the group who is actually doing
+the work, rather than trusting anyone's word for it.
 
 ## What's deliberately missing
 
-The brief that shaped this project was about building small, for a handful of
-people, instead of defaulting to growth-product features no one asked for.
-So this app has no private messages, no friend requests, no follower counts,
-and no feed of what anyone else has been doing. The only channel between two
-users is the shared room chat, and that chat only exists during the break —
-it is not a general-purpose messaging feature that happens to be scoped to a
-room, it is specifically the five minutes of social contact the Pomodoro
-technique already prescribes. Locking it the instant focus starts isn't a UI
-nicety either: the server rejects a `chat:send` event sent during a focus
-block regardless of what the sending client's own interface shows, because
-the rule that matters is the one a bypassed or buggy client can't get around.
+No private messages, friend requests, follower counts, or feeds — the brief
+was about building small, not chasing growth. The only channel between users
+is the room chat, open only during the break; the server rejects `chat:send`
+during focus regardless of the client UI.
 
-## What "alive" means here
+## Identity, choice, and accountability
 
-A stranger who opens this app, picks a library, and starts a focus block
-should be able to leave, come back, and find their own focus minutes still
-counted on their account — that persistence is the whole bet. A second
-stranger joining the same room mid-block should see the exact time left, not
-a fresh timer, because that's the difference between a room that is actually
-synchronized and one that only looks synchronized until you check the clock.
+Signing up requires an `@anu.edu.au` address, but the username is still the
+only identity shown. A block's length is one of four fixed presets; whoever
+starts it can end it early, banking partial minutes, but nobody else can —
+extending stays open to everyone, since it can't grief the room. You can also
+plan a session ahead; this is **not** an integration with ANU's real booking
+system, so the page is honest about being its own planner plus a link to
+ANU's actual site. A shared goal list opens a short review window if
+unfinished when a block ends, where anyone can extend to finish it —
+otherwise it clears and the room moves to break.
 
-## A real ANU identity, but still just a username to everyone else
+## Watching, and joining anonymously
 
-Signing up requires an `@anu.edu.au` address, checked by format only — there's
-no verification email, because sending one needs a mail-sending service and an
-API key this project hasn't provisioned, so the gate is honest about being a
-domain check rather than proof of a live mailbox. The point of requiring it at
-all isn't to show it to anyone: the username is still the only identity the
-app ever displays, broadcasts, or returns from an API call, in the roster, in
-chat, in `/api/me`. Tying signup to a real ANU address just means the
-"real, physically real people" premise the rest of this README leans on is
-backed by something a bit stronger than an email field nobody checks.
+Anyone can watch a room's live timer, roster, and chat without signing in, as
+a "watching" count distinct from the roster; every mutating action is
+rejected server-side regardless of the client. "Continue anonymously" grants
+a random name with full participation parity, withholding only what needs a
+persistent identity: stats, planning, a database row.
 
-## Choosing how long to focus, and the right to end it early
+## Multi-user decisions this app had to make
 
-A block's length is one of four fixed presets — 15, 25, 45, or 50 minutes —
-picked by whoever starts it, in keeping with this app's stance that good
-productivity software removes choices rather than adding them: a free-form
-number input would turn "how long should I focus" into its own small
-procrastination. The server is the only thing that enforces the bound; a
-client that sent anything else would be ignored, the same posture as the
-chat-lock rule above. Whoever starts a block can also end it early with a
-Reset button, labelled "Stop early" while a block is running — but only that
-person, not anyone else in the room, so a block can't be griefed by someone
-else in the room cutting it short. A reset still banks partial focus minutes
-for the time that did elapse.
-
-A running block can also be made longer, not just cut short — anyone present
-can add one of the same four presets to a block that's still actively
-running, the same "add more time" control the post-block review window
-already offers (below), just available earlier. The same asymmetry applies:
-extending is open to everyone in the room, because adding time can't be used
-to grief anyone, while stopping early stays restricted to whoever started the
-block. Extending mid-focus doesn't restart the clock — it adds the extra
-minutes onto the existing end time, so time already spent focusing is never
-forgotten.
-
-## Planning ahead, honestly
-
-You can mark intent to study at a location ahead of time — up to two weeks
-out, mirroring the real ANU library's own booking horizon — and anyone else
-who opens that room sees it appear immediately, the same live, no-refresh
-channel the roster and timer already use. This is **not** an integration with
-ANU's library room-booking system: that system (`anu.libcal.com`) requires
-ANU SSO login even to view read-only room availability, and the only way to
-build a real integration would be for this app to accept and replay a user's
-real ANU password, which is a hard no regardless of how useful the feature
-would be. So the room page is honest about what it actually does: an in-app
-planner that's visible to everyone in that room, plus a plain link out to
-ANU's own booking site for anyone who wants to reserve an actual room.
-
-A booking you make is never just a line in the room you made it from, either:
-it shows up immediately (read straight from the server on page load, not
-waiting on the first socket round-trip), it's counted as an "N planned" badge
-on that location from the home page, and it's listed on your own home page
-under "your upcoming sessions" regardless of which room you booked it in —
-so there's exactly one honest answer to "what have I actually booked," not
-every room to check individually.
-
-## A shared goal list, and the accountability of a review window
-
-At the start of a block, anyone in the room can add a few lines to a shared
-goal list — not a personal to-do list, a **room** one, consistent with
-everything else in this app being visible to whoever's physically there
-rather than private to one account. If the list still has unchecked items
-when the clock runs out, the room doesn't jump straight to break: it enters a
-short review window first, where chat opens and the unfinished items sit on
-screen, and anyone currently in the room can extend the block by one of the
-same four fixed presets to keep working the list. Nobody is forced to decide
-anything — if the window lapses with nobody extending, the list is cleared
-and the room moves on to break exactly as if there'd been no goals at all.
-
-Extending is deliberately open to **anyone** in the room, not just whoever
-started the block — unlike Reset, which stays restricted to that one person.
-The asymmetry is the point: cutting a block short can be used to grief
-everyone else still working, so only the person who started it can do that;
-adding more time never can, so there's no reason to gate it the same way.
-And there's no separate "quit" button for review, because there was never a
-missing one — leaving a room by navigating away has always been possible at
-any time, including mid-review, and the review window is a chance to extend,
-not a lock on the door.
-
-## Anonymous entry, honestly implemented
-
-"Continue anonymously" gets you a random name — an adjective and an animal,
-like "Sleepy Koala 42" — never one you pick, so a guest can never pick a name
-that collides with or impersonates a real signed-in user. A guest can join a
-room, start and extend blocks, chat, and add or check off shared goals with
-full parity to a real account; the only things withheld are the ones that are
-meaningless for an identity guaranteed not to last — no focus-minutes figure,
-no place in anyone's statistics, and no access to the forward-looking study
-planner, since planning ahead is a commitment to a future this identity won't
-be around for.
-
-The "won't persist beyond this session" promise is implemented as literally
-as possible: a guest identity has no row in the database at all, not a users
-row that gets deleted later. It lives only in server memory for as long as
-the process and that browser tab are both still around, under the same
-session-cookie mechanism a real login uses, so none of the room/timer/chat
-code has to know or care which kind of identity it's looking at.
-
-## Watching before you're in it
-
-Opening any room's page without being signed in at all — not even as a
-guest — still gets you a live, read-only view: the same synced timer,
-roster, and chat everyone else in the room sees, updating with no refresh,
-exactly as described above. The only thing withheld is participation —
-every action that changes room state is rejected by the server regardless
-of what a modified client might try to send. A "Join in" button converts
-a Shadow into the same randomly-named guest identity described above, with
-no separate step to type or choose a name: letting someone type a
-pseudonym at that moment would reopen the exact impersonation risk the
-random-name guarantee above exists to close.
-
-## Choosing a start time together, not just a length
-
-Starting a block doesn't have to mean one person picking a preset and
-everyone else just going along with it. Anyone in a room can instead
-propose a group vote: the block doesn't start immediately, but waits for
-the next `:00` or `:30` on the clock, and until then, anyone present can
-cast a vote for 15, 25, 45, or 50 minutes, same four presets as the regular
-start, with the live tally visible to everyone in the room. Whichever
-length has the most votes when the clock hits that mark is what the room
-gets; a tie goes to the shorter length, since nobody loses time to a group
-that can't agree. This is an additional way to start a block, not a
-replacement for the existing one — a room is never forced through a vote
-just because the feature exists.
-
-## A spark instead of a message, while focus is locked
-
-Chat is deliberately dead during a focus block — that's the whole point of
-the lock described above. But "no communication at all" and "no distraction"
-aren't the same requirement, so there's exactly one signal a focused user can
-still send to everyone else in the room: a spark. Clicking it fires instantly
-over the same WebSocket connection everything else in this app uses, no page
-reload, and everyone else currently in the room — the sender included — sees
-a brief glowing ripple around the timer and a small toast naming who sent it,
-paired with one short encouraging line, fading out after two seconds. That
-line is never typed by the sender: the server picks it from the same pool of
-phrases the periodic room-wide encouragement beats already draw from, so
-whoever sent the spark and everyone who received it all see the identical
-words. A spark still carries no *user-authored* text and can't carry any —
-there's nothing for a person to type, so it can't become a second chat
-channel in disguise. It only exists, and only does anything, while a focus
-block is actually running; the button itself is inert the rest of the time.
-It's also rate-limited to one spark per person every ten seconds, enforced on
-the server regardless of how fast a modified client might click, so it can't
-be turned into a way to spam a room full of people trying to concentrate —
-and that cooldown is exactly what lets a spark be sent again and again
-through a block, not just once.
-
-## Starting a block is a race with exactly one winner
-
-Nothing stops two different people in the same room from both reaching for
-"start" at effectively the same moment — one picking a preset instantly, the
-other proposing or resolving a lobby vote. Exactly one of those requests
-takes effect; the other is rejected outright, not merged, queued, or
-retried, and every client in the room ends up looking at the identical
-result: same length, same end time, same name in "started by." This isn't
-a lock this app had to build so much as a guarantee that already fell out of
-how the server runs: Node handles one event at a time, and the state read
-that decides "is this room actually idle right now" and the state write that
-claims it happen back-to-back with nothing in between — no `await`, nothing
-asynchronous — so the second request's handler never gets a chance to read
-a room that hasn't already been claimed by the first one. See
-`spec/lobby-override-race.test.ts` for this proven against the real running
-server, not just argued for in a comment.
+Two decisions matter most once people share one room. First: anyone can
+propose a group vote instead of picking a preset alone. The block waits for
+the next `:00`/`:30`-second wall-clock mark, and until then anyone present
+casts a live, re-votable tally; most votes wins, a tie goes shorter, letting
+a group converge on a shared start time without negotiating it directly.
+Second: nothing stops two people reaching for "start," or toggling the same
+goal, at once. Node handles one event at a time with no `await` between
+reading and writing state, so exactly one request takes effect and every
+client converges on the identical result — the same guarantee that resyncs a
+dropped connection on reconnect. During focus, chat is locked but a single
+wordless "spark" — a rate-limited, system-picked encouraging line — is still
+live.
 
 ## Deleting an account, completely
 
-Account deletion is behind re-entering your password, with the consequences
-spelled out in plain text next to the button rather than a browser `confirm`
-popup that's too easy to click through without reading. Deleting an account
-deletes your chat history and your planned sessions, not just your login —
-this app doesn't have a lesser "deactivate" option, because partial deletion
-would make the "delete my account" button a lie. If the account mid-deletion
-is in the middle of running a focus block for a room with other people still
-in it, that block is ended first: everyone present banks the partial focus
-minutes they'd actually earned, and the room returns to idle cleanly rather
-than being left pointing at a `started_by` that no longer exists.
+Deletion requires re-entering your password and removes chat history and
+planned sessions, not just the login. A running block ends first, banking
+everyone's partial minutes before the room goes idle.

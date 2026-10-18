@@ -1,23 +1,26 @@
 # Process overview
 
 ## What I built
-This week’s focus was on designing real-time interactions that are visible to everyone in a room, rather than only to the user who initiates them, and that persist across reconnections. Building on the existing timer, chat, and account functionality, I implemented group voting and simple interactions to support collaboration while keeping the app focused on productivity.
+This week’s crit is focused on implementing a logging mechanism for multi-user. I implemented this with the following design choices:
+1. 'Accountability' tracking. The app tracks each user, and whether they're actively present during the 'focus time'. Should they switch windows or tab for more than a determined time, the server will log that the user is no longer presence in the session.
+2. Unique session ID assigned to the users.
 
 ## Process
-The process started by refining the project’s scope. In the previous crit, the key feedback was to establish a clearer focus on the app’s target users. Since the app is intended for ANU students, I focused on improving the layout and making the initial user experience more intuitive. I implemented two key changes:
+The process started by brainstorming ideas on how to represent 'logs who did what'. Firstly, I implemented basic session ID to each user, as well as proper server-side logging:
 
-1. **Restructured the page layouts** to better reflect the concept of shared study spaces and make the app’s purpose clearer.
-2. **Improved accessibility and ease of use** by allowing anonymous visitors to access basic functionality without creating an account.
+(cite prompt, cite)
 
-Next, I focused on multi-user interactions. Since the app is designed to support productivity, I wanted to minimise the interaction required from users while still making group dynamics visible. I therefore scoped this crit around three key functionalities:
+To ensure that the 
 
-1. **Group voting for focus duration:** Rather than allowing a single user to determine the length of a focus session, users can collectively decide on the duration through a voting mechanism.
+Next, I would like to add logging features to log certain activities of the users. This is firstly done through implementing 'accountability'. I.e., a logging that tracks whether a user is active in a session, or if they're away:
 
-2. **Group chat and encouragements:** Implemented group messaging and lightweight encouragements that users can send to one another during focus sessions, supporting social connection without unnecessarily disrupting concentration.
-[6399bc4](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/6399bc4)
+(cite, cite)
 
-3. **Concurrency handling:** Ensured that simultaneous start and voting requests are resolved consistently on an ordered, preventing conflicting outcomes across users.
-([cc1955f](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/cc1955f))
+I decided to also implement an additional logging on the time a user joins a focus session (i.e., if they join in the middle of a session, etc).
 
-These functionalites were subsequently tested using built-in tests:
-([1bbb9dd](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/1bbb9dd)).
+(cite)
+
+as well as a logging on the voting behaviour of the users, to highlight the multi-user aspect of the prototype.
+
+Lastly, these functionalites were subsequently tested using built-in tests:
+

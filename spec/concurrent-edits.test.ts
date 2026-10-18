@@ -52,6 +52,31 @@ function untilVoteCount(
   });
 }
 
+// A room:update that should have arrived (a vote landing, a status change)
+// can be lost to a server bug, a dropped packet, or — as happened once with
+// the "law-l3" room below — an earlier run of this same test timing out
+// before reaching its own cleanup. Without a cap, that failure mode hangs
+// past vitest's own test timeout mid-await, which means the `finally` block
+// below never runs either, and the room stays wedged for every later run
+// against this long-lived dev server until its real-world grid mark fires.
+// Wrapping the vulnerable waits turns "hangs forever" into "fails fast with
+// a clear reason, and still reaches cleanup."
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms waiting for ${label}`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 type Goal = { id: number; body: string; done: boolean };
 
 // Resolves on the Nth room:update this socket receives from the moment it's
@@ -136,48 +161,54 @@ it("serializes two concurrent goal-toggle emissions so both sockets converge on 
   }
 });
 
-it("lands both of two concurrent votes from different users in the same tally", async () => {
-  const slug = "law-l3";
-  const aCookie = await registerAndGetCookie(`voter-a-${randomUUID().slice(0, 8)}`);
-  const bCookie = await registerAndGetCookie(`voter-b-${randomUUID().slice(0, 8)}`);
+it(
+  "lands both of two concurrent votes from different users in the same tally",
+  async () => {
+    const slug = "law-l3";
+    const aCookie = await registerAndGetCookie(`voter-a-${randomUUID().slice(0, 8)}`);
+    const bCookie = await registerAndGetCookie(`voter-b-${randomUUID().slice(0, 8)}`);
 
-  const a = connect(aCookie);
-  const b = connect(bCookie);
-  try {
-    await Promise.all([once(a, "connect"), once(b, "connect")]);
-    a.emit("room:join", { slug });
-    await once(a, "room:update");
-    b.emit("room:join", { slug });
-    await once(b, "room:update");
+    const a = connect(aCookie);
+    const b = connect(bCookie);
+    try {
+      await Promise.all([once(a, "connect"), once(b, "connect")]);
+      a.emit("room:join", { slug });
+      await once(a, "room:update");
+      b.emit("room:join", { slug });
+      await once(b, "room:update");
 
-    a.emit("room:start-lobby");
-    await untilStatus(a, "lobby");
-    await untilStatus(b, "lobby");
+      a.emit("room:start-lobby");
+      await withTimeout(untilStatus(a, "lobby"), 5000, "a to see lobby status");
+      await withTimeout(untilStatus(b, "lobby"), 5000, "b to see lobby status");
 
-    // Resolves once a's 25-minute vote has landed. 45 only reaches count 1
-    // once both votes have been processed, since 25 is cast first — waiting
-    // on it is equivalent to waiting for both to have landed.
-    const bothLanded = untilVoteCount(a, 45, 1);
+      // Resolves once a's 25-minute vote has landed. 45 only reaches count 1
+      // once both votes have been processed, since 25 is cast first — waiting
+      // on it is equivalent to waiting for both to have landed.
+      const bothLanded = untilVoteCount(a, 45, 1);
 
-    // Fired back-to-back with no await between them, from two different
-    // users — votes are keyed per-user, so unlike the goal toggles above
-    // neither should overwrite the other.
-    a.emit("room:vote", { minutes: 25 });
-    b.emit("room:vote", { minutes: 45 });
+      // Fired back-to-back with no await between them, from two different
+      // users — votes are keyed per-user, so unlike the goal toggles above
+      // neither should overwrite the other.
+      a.emit("room:vote", { minutes: 25 });
+      b.emit("room:vote", { minutes: 45 });
 
-    const result = await bothLanded;
-    const twentyFive = result.votes.find((v) => v.minutes === 25);
-    const fortyFive = result.votes.find((v) => v.minutes === 45);
-    expect(twentyFive?.count).toBe(1);
-    expect(fortyFive?.count).toBe(1);
-  } finally {
-    // Closing a immediately after emit() can drop the reset packet before it
-    // flushes, leaving the room stuck in "lobby" for the next run against
-    // this same long-lived dev server — wait for b's own idle broadcast first.
-    const bSawIdle = untilStatus(b, "idle");
-    a.emit("room:reset");
-    await bSawIdle;
-    a.close();
-    b.close();
-  }
-});
+      const result = await withTimeout(bothLanded, 5000, "both votes to land in the tally");
+      const twentyFive = result.votes.find((v) => v.minutes === 25);
+      const fortyFive = result.votes.find((v) => v.minutes === 45);
+      expect(twentyFive?.count).toBe(1);
+      expect(fortyFive?.count).toBe(1);
+    } finally {
+      // Bounded, unlike the plain `await` this used to be: if the room was
+      // somehow already wedged by something other than this run, a's reset
+      // is a no-op (resetRoom is owner-gated) and b would never see "idle" —
+      // without a cap, that hangs cleanup forever, the exact failure mode
+      // this test must never reproduce. Swallow a timeout here rather than
+      // fail the test on it; the assertions above already ran.
+      a.emit("room:reset");
+      await withTimeout(untilStatus(b, "idle"), 3000, "room to confirm reset").catch(() => {});
+      a.close();
+      b.close();
+    }
+  },
+  15000,
+);

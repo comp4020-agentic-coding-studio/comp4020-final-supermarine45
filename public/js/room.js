@@ -3,6 +3,8 @@ const slug = window.location.pathname.split("/").pop();
 const userBadge = document.getElementById("user-badge");
 const joinInButton = document.getElementById("join-in-btn");
 const shadowNoteEl = document.getElementById("shadow-note");
+const pseudonymForm = document.getElementById("pseudonym-form");
+const pseudonymInput = document.getElementById("pseudonym-input");
 const roomNameEl = document.getElementById("room-name");
 const timerEl = document.getElementById("timer");
 const phaseLabelEl = document.getElementById("phase-label");
@@ -99,6 +101,25 @@ async function loadUser() {
 joinInButton.addEventListener("click", async () => {
   await fetch("/auth/guest", { method: "POST" });
   window.location.reload();
+});
+
+// Zero-Friction Identity: a Shadow can type a name instead, converting to
+// Active in place over the socket — set_pseudonym mints the identity and
+// hands back a session token, which this then adopts as a cookie via one
+// small follow-up request so the identity survives the reload.
+pseudonymForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const pseudonym = pseudonymInput.value.trim();
+  if (!pseudonym) return;
+  socket.once("pseudonym:set", async ({ token }) => {
+    await fetch("/auth/adopt-session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    window.location.reload();
+  });
+  socket.emit("set_pseudonym", { pseudonym });
 });
 
 async function loadPresets() {
@@ -200,6 +221,22 @@ socket.on("account:deleted", () => {
   window.location.href = "/login";
 });
 
+// Live Accountability: reports raw Page Visibility state to the server on
+// every change, for every connected user (Shadow or Active) — the server
+// alone decides what a hidden tab means and times the penalty, so this is
+// the only client-side role this feature has.
+document.addEventListener("visibilitychange", () => {
+  socket.emit(document.hidden ? "tab_hidden" : "tab_visible");
+});
+
+socket.on("room:notice", (text) => {
+  showPresenceToast(text);
+});
+
+socket.on("room:unauthorized", (payload) => {
+  console.warn("rejected:", payload.action);
+});
+
 function showEncouragement(body) {
   const toast = document.createElement("div");
   toast.className = "encouragement";
@@ -278,6 +315,7 @@ function renderRoster(roster) {
     const score = entry.isGuest
       ? `<span class="guest-tag">guest</span>`
       : `<span class="score">${Math.round(entry.focusMinutesTotal)}</span>`;
+    const dotClass = entry.tabHidden ? "dot tab-hidden" : `dot ${currentTimer.status}`;
     div.innerHTML = `
       <span>
         <span class="status-ring">
@@ -285,7 +323,7 @@ function renderRoster(roster) {
             <circle class="ring-track" cx="12" cy="12" r="${RING_RADIUS}"></circle>
             <circle class="ring-fill ${currentTimer.status}" cx="12" cy="12" r="${RING_RADIUS}" stroke-dasharray="${RING_CIRCUMFERENCE}" stroke-dashoffset="${RING_CIRCUMFERENCE}"></circle>
           </svg>
-          <span class="dot ${currentTimer.status}"></span>
+          <span class="${dotClass}"></span>
         </span>${escapeHtml(entry.username)}</span>
       ${score}
     `;

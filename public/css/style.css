@@ -8,6 +8,7 @@
   --border: #b7b198;
   --border-soft: rgba(34, 31, 25, 0.12);
   --spark: #3f8f5c;
+  --warn: #d9a441;
   --active: #10b981;
   --active-glow: 0 0 6px rgba(16, 185, 129, 0.65);
   --card-bg: #f8f8f6;
@@ -134,7 +135,8 @@ header.top h1 {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  flex-wrap: wrap;
+  gap: 0.75rem 1rem;
   background: var(--focus);
   color: #fff;
   padding: 0.75rem 2rem;
@@ -153,6 +155,41 @@ header.top h1 {
 
 .shadow-banner .join-in-btn:hover {
   opacity: 0.9;
+}
+
+.pseudonym-form {
+  display: flex;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+.pseudonym-form input {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid transparent;
+  color: var(--fg);
+  padding: 0.4rem 0.7rem;
+  border-radius: var(--radius-sm);
+  font-family: var(--sans);
+  font-size: 0.8rem;
+  width: 9rem;
+}
+
+.pseudonym-form button {
+  background: transparent;
+  color: #fff;
+  border: 1px solid #fff;
+  font-weight: 700;
+  padding: 0.4rem 0.9rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.pseudonym-form button:hover {
+  background: rgba(255, 255, 255, 0.15);
 }
 
 .dot {
@@ -180,6 +217,14 @@ header.top h1 {
 .dot.lobby {
   background: var(--break);
   animation: pulse 2.4s ease-in-out infinite;
+}
+
+/* Tab Visibility telemetry (Week 11): a per-user signal, distinct from and
+   overriding the shared room-phase coloring above for that one roster row —
+   this user's tab is hidden right now, regardless of what the room is doing. */
+.dot.tab-hidden {
+  background: var(--warn);
+  animation: pulse 1.2s ease-in-out infinite;
 }
 
 /* Wraps a roster row's .dot so the shared room clock (driven from room.js's
