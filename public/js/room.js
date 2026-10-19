@@ -98,9 +98,30 @@ async function loadUser() {
 // Mirrors the existing guest button in public/login.html exactly — a random
 // adjective+animal name, no typed pseudonym. Deliberate: a guest name is
 // never chosen, so it can never collide with or impersonate a real account.
+//
+// Also mirrors login.html's retry: the app's Fly machine scales to zero, so
+// a click that lands during a cold start can fail outright with no response
+// at all — with no retry or feedback this button looked simply dead.
 joinInButton.addEventListener("click", async () => {
-  await fetch("/auth/guest", { method: "POST" });
-  window.location.reload();
+  joinInButton.disabled = true;
+  try {
+    let res;
+    try {
+      res = await fetch("/auth/guest", { method: "POST" });
+    } catch {
+      await new Promise((r) => setTimeout(r, 2000));
+      res = await fetch("/auth/guest", { method: "POST" });
+    }
+    if (res.ok) {
+      window.location.reload();
+      return;
+    }
+    showPresenceToast("Couldn't join in — try again.");
+  } catch {
+    showPresenceToast("Couldn't reach the server — try again.");
+  } finally {
+    joinInButton.disabled = false;
+  }
 });
 
 // Zero-Friction Identity: a Shadow can type a name instead, converting to
@@ -112,12 +133,17 @@ pseudonymForm.addEventListener("submit", (e) => {
   const pseudonym = pseudonymInput.value.trim();
   if (!pseudonym) return;
   socket.once("pseudonym:set", async ({ token }) => {
-    await fetch("/auth/adopt-session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
-    });
-    window.location.reload();
+    try {
+      const res = await fetch("/auth/adopt-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      if (!res.ok) throw new Error("adopt-session failed");
+      window.location.reload();
+    } catch {
+      showPresenceToast("Couldn't finish joining — try again.");
+    }
   });
   socket.emit("set_pseudonym", { pseudonym });
 });

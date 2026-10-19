@@ -22,6 +22,7 @@
       <p>No account? <a href="/register">Register</a></p>
       <hr class="divider" />
       <button type="button" id="guest-btn">Continue anonymously</button>
+      <p class="error" id="guest-error"></p>
       <p class="warning">
         No account — a random name, nothing saved when you leave, no stats or ranking.
       </p>
@@ -43,9 +44,34 @@
         }
       });
 
+      // The app's Fly machine scales to zero and cold-starts on the next
+      // request, which can take a couple of seconds — a request that lands
+      // in that window fails outright rather than 4xx-ing, and with no retry
+      // or feedback this button looked simply dead. One retry rides out a
+      // cold start; a visible message covers the rare case it doesn't.
       document.getElementById("guest-btn").addEventListener("click", async () => {
-        const res = await fetch("/auth/guest", { method: "POST" });
-        if (res.ok) window.location.href = "/";
+        const btn = document.getElementById("guest-btn");
+        const errorEl = document.getElementById("guest-error");
+        errorEl.textContent = "";
+        btn.disabled = true;
+        try {
+          let res;
+          try {
+            res = await fetch("/auth/guest", { method: "POST" });
+          } catch {
+            await new Promise((r) => setTimeout(r, 2000));
+            res = await fetch("/auth/guest", { method: "POST" });
+          }
+          if (res.ok) {
+            window.location.href = "/";
+            return;
+          }
+          errorEl.textContent = "Couldn't start a guest session — try again.";
+        } catch {
+          errorEl.textContent = "Couldn't reach the server — try again.";
+        } finally {
+          btn.disabled = false;
+        }
       });
     </script>
   </body>
