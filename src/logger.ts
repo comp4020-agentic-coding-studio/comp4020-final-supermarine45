@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { Identity } from "./db.js";
@@ -72,4 +72,32 @@ export function logStatus(level: LogLevel, message: string): void {
   else if (level === "WARN") console.warn(line);
   else console.log(line);
   if (statusLogPath) appendFileSync(statusLogPath, line + "\n");
+}
+
+export type LogCategory = "activity" | "system" | "status";
+
+const logPathFor: Record<LogCategory, () => string | null> = {
+  activity: () => activityLogPath,
+  system: () => systemLogPath,
+  status: () => statusLogPath,
+};
+
+// Reads back the tail of one log category. Specs run only against the live
+// app over HTTP/WebSocket (see spec/global-setup.ts) and never assume
+// filesystem access to it — in CI the app runs inside a Docker container
+// with an ephemeral, test-runner-inaccessible /data. Exposing this through a
+// route (see routes/pages.ts) lets a spec assert on log *content* the same
+// way it asserts on everything else: by asking the running app, not by
+// reading its disk.
+export function readRecentLog(category: LogCategory, limit = 200): string[] {
+  const filePath = logPathFor[category]();
+  if (!filePath) return [];
+  let contents: string;
+  try {
+    contents = readFileSync(filePath, "utf8");
+  } catch {
+    return [];
+  }
+  const lines = contents.split("\n").filter((line) => line.length > 0);
+  return lines.slice(-limit);
 }

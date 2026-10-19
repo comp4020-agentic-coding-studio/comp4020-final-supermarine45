@@ -3,7 +3,10 @@ import type { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { marked } from "marked";
 import { countUpcomingSessions, findUserById, getLocationBySlug, isGuest, listLocations } from "../db.js";
+import { readRecentLog, type LogCategory } from "../logger.js";
 import { FOCUS_PRESETS_MIN } from "../rooms.js";
+
+const LOG_CATEGORIES: readonly LogCategory[] = ["activity", "system", "status"];
 
 export function pagesRouter(db: DatabaseSync, readmePath: string): Router {
   const router = Router();
@@ -36,6 +39,25 @@ export function pagesRouter(db: DatabaseSync, readmePath: string): Router {
 
   router.get("/api/config", (_req, res) => {
     res.json({ focusPresetsMin: FOCUS_PRESETS_MIN });
+  });
+
+  // Read-only tail of one of the three log streams (see logger.ts), exposed
+  // so the test suite can assert on log *content* the same way it asserts on
+  // everything else: against the running app over HTTP, never by reading its
+  // disk directly. In CI the app runs inside a Docker container with an
+  // ephemeral /data the test runner has no filesystem access to, so this is
+  // the only way a spec can see what actually got logged. Unauthenticated,
+  // same posture as every other read in this app (no login walls, no admin
+  // concept) — and these logs already carry nothing more sensitive than a
+  // username and a room name, same as the roster every shadow viewer sees.
+  router.get("/api/logs/:category", (req, res) => {
+    const category = req.params.category as LogCategory;
+    if (!LOG_CATEGORIES.includes(category)) {
+      res.status(404).json({ error: "unknown log category" });
+      return;
+    }
+    const limit = Math.min(Number(req.query.limit) || 200, 1000);
+    res.json({ lines: readRecentLog(category, limit) });
   });
 
   router.get("/login", (_req, res) => {
