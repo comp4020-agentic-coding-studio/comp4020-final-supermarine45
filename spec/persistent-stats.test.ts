@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { io, type Socket } from "socket.io-client";
 import { expect, inject, it } from "vitest";
+import { TABLE_CYCLE_MS } from "../src/rooms.js";
 
 const baseUrl = inject("baseUrl");
 
@@ -17,8 +18,8 @@ async function registerAndGetCookie(username: string): Promise<string> {
 }
 
 // A fresh login mints a brand-new session row, distinct from the one
-// registration made. Reading focusMinutesTotal back through *that* — rather
-// than through the connection that earned it, which never closed — is what
+// registration made. Reading vfhCount back through *that* — rather than
+// through the connection that earned it, which never closed — is what
 // actually stands in for a stranger leaving and coming back later.
 async function loginAndGetCookie(username: string, password: string): Promise<string> {
   const res = await fetch(new URL("/auth/login", baseUrl), {
@@ -32,9 +33,7 @@ async function loginAndGetCookie(username: string, password: string): Promise<st
   return setCookie!.split(";")[0];
 }
 
-async function getMe(
-  cookie: string,
-): Promise<{ username: string; focusMinutesTotal: number | null; isGuest: boolean }> {
+async function getMe(cookie: string): Promise<{ id: number; username: string; vfhCount: number | null; isGuest: boolean }> {
   const res = await fetch(new URL("/api/me", baseUrl), { headers: { cookie } });
   expect(res.status).toBe(200);
   return res.json();
@@ -48,12 +47,12 @@ function once<T = unknown>(socket: Socket, event: string): Promise<T> {
   return new Promise((resolve) => socket.once(event, resolve));
 }
 
-// Same reasoning as focus-enforcement.test.ts: a room broadcasts room:update
-// on every change, so filter for the status actually being waited on instead
-// of trusting that the very next event is it.
-function untilStatus(socket: Socket, status: string): Promise<{ timer: { status: string } }> {
+type Ticket = { userId: number; stamp: string | null };
+type RoomUpdate = { timer: { status: string }; tickets: Ticket[] };
+
+function untilStatus(socket: Socket, status: string): Promise<RoomUpdate> {
   return new Promise((resolve) => {
-    const handler = (payload: { timer: { status: string } }): void => {
+    const handler = (payload: RoomUpdate): void => {
       if (payload.timer.status === status) {
         socket.off("room:update", handler);
         resolve(payload);
@@ -63,25 +62,67 @@ function untilStatus(socket: Socket, status: string): Promise<{ timer: { status:
   });
 }
 
-// Drives a user through "the core thing": join a room, run a short focus
-// block, bank the partial minutes with Reset. Using Reset instead of waiting
-// out a full block is also what keeps this self-cleaning — the room is back
-// to idle by the time this resolves, same as the fixed-slug tests elsewhere
-// in this suite rely on.
-async function earnSomeFocusMinutes(cookie: string, slug: string, waitMs: number): Promise<void> {
+function untilOwnTicketStamped(socket: Socket, userId: number): Promise<RoomUpdate> {
+  return new Promise((resolve) => {
+    const handler = (payload: RoomUpdate): void => {
+      if (payload.tickets.some((t) => t.userId === userId && t.stamp !== null)) {
+        socket.off("room:update", handler);
+        resolve(payload);
+      }
+    };
+    socket.on("room:update", handler);
+  });
+}
+
+// Drives a user through "the core thing": board a ticket, let the scheduler
+// carry the table through a full focus block into break, then stamp. No
+// manual start/reset exists anymore (Decision 2) — the cycle mark and the
+// focus->break transition are both the scheduler's own, waited out for real
+// rather than forced, same no-fake-timers convention this suite has always
+// used.
+async function earnOneVfh(cookie: string, slug: string, mode: string, stamp: "completed" | "partial"): Promise<void> {
+  const { id: userId } = await getMe(cookie);
   const socket = connect(cookie);
   try {
     await once(socket, "connect");
-    socket.emit("room:join", { slug });
+    socket.emit("room:join", { slug, mode });
+    await once(socket, "room:joined");
     await once(socket, "room:update");
 
-    socket.emit("room:start-focus", { minutes: 15 });
-    await untilStatus(socket, "focus");
+    const sawFocus = untilStatus(socket, "focus");
+    socket.emit("room:submit-ticket", { body: "Read two chapters" });
+    await sawFocus;
+
+    await untilStatus(socket, "break");
+
+    // Confirm the stamp actually landed before closing the socket — closing
+    // immediately after emit() can drop the packet before it flushes, same
+    // hazard reconnect-sync.test.ts/latecomer-sync.test.ts guard against for
+    // room:reset.
+    const stamped = untilOwnTicketStamped(socket, userId);
+    socket.emit("room:stamp-ticket", { stamp });
+    await stamped;
+  } finally {
+    socket.close();
+  }
+}
+
+// Boards a ticket and leaves before the block ends — the scheduler's own
+// transitions keep running for the table regardless, but this socket is gone
+// well before break, so there's nothing left to stamp.
+async function boardThenLeaveEarly(cookie: string, slug: string, mode: string, waitMs: number): Promise<void> {
+  const socket = connect(cookie);
+  try {
+    await once(socket, "connect");
+    socket.emit("room:join", { slug, mode });
+    await once(socket, "room:joined");
+    await once(socket, "room:update");
+
+    const sawFocus = untilStatus(socket, "focus");
+    socket.emit("room:submit-ticket", { body: "Read two chapters" });
+    await sawFocus;
 
     await new Promise((resolve) => setTimeout(resolve, waitMs));
-
-    socket.emit("room:reset");
-    await untilStatus(socket, "idle");
   } finally {
     socket.close();
   }
@@ -89,47 +130,95 @@ async function earnSomeFocusMinutes(cookie: string, slug: string, waitMs: number
 
 // Crit 8's persistence spec, in this app's own terms: "a stranger can visit,
 // do the core thing, and find their trace still there when they come back."
-// The core thing here is a focus block; the trace is focus_minutes_total.
-it("keeps a user's focus minutes on their account across a fresh login", async () => {
-  const username = `returner-${randomUUID().slice(0, 8)}`;
-  const password = "password123";
-  const registerCookie = await registerAndGetCookie(username);
+// The core thing here is a full focus block honestly checked out; the trace
+// is a Verified Focus Hour.
+it(
+  "keeps a user's VFH count on their account across a fresh login",
+  async () => {
+    const username = `returner-${randomUUID().slice(0, 8)}`;
+    const password = "password123";
+    const registerCookie = await registerAndGetCookie(username);
 
-  await earnSomeFocusMinutes(registerCookie, "hancock", 1500);
+    await earnOneVfh(registerCookie, "hedley-common", "silent", "completed");
 
-  const returnCookie = await loginAndGetCookie(username, password);
-  const me = await getMe(returnCookie);
+    const returnCookie = await loginAndGetCookie(username, password);
+    const me = await getMe(returnCookie);
 
-  expect(me.isGuest).toBe(false);
-  expect(me.focusMinutesTotal).toBeGreaterThan(0);
-});
+    expect(me.isGuest).toBe(false);
+    expect(me.vfhCount).toBe(1);
+  },
+  TABLE_CYCLE_MS * 2 + 20000,
+);
 
-// A counter that merges everyone's time into one global total, or credits
+// VFH is binary-per-block, not proportional to elapsed time (Decision 6) —
+// staying the full 50 minutes and stamping is what earns it, nothing less.
+// Leaving mid-block, even most of the way through, earns exactly 0: the tab-
+// penalty demotion path (applyTabPenalty -> markTicketNotFullBlock) is the
+// server-side enforcement; this proves the plain "disconnected before break"
+// case the same path exists to cover.
+it(
+  "earns zero VFH for a ticket whose holder left before the block ended",
+  async () => {
+    const username = `leaver-${randomUUID().slice(0, 8)}`;
+    const password = "password123";
+    const cookie = await registerAndGetCookie(username);
+
+    // Leaves partway through the focus block, well before break — long
+    // enough to be a meaningful "mostly stayed", short enough to stay inside
+    // a single test-speed focus block.
+    await boardThenLeaveEarly(cookie, "hedley-l2", "silent", Math.min(1500, Math.floor(TABLE_CYCLE_MS / 4)));
+
+    const returnCookie = await loginAndGetCookie(username, password);
+    const me = await getMe(returnCookie);
+
+    expect(me.vfhCount).toBe(0);
+  },
+  TABLE_CYCLE_MS + 20000,
+);
+
+// A counter that merges everyone's cycles into one global total, or credits
 // the wrong account, would pass the single-user test above just as easily.
-// Two different users, in two different rooms, for two different elapsed
-// times, is what actually rules that out.
-it("tracks two different users' persisted focus minutes independently", async () => {
-  const password = "password123";
-  const usernameA = `usera-${randomUUID().slice(0, 8)}`;
-  const usernameB = `userb-${randomUUID().slice(0, 8)}`;
+// Two different users, at two different tables, one who stamps and one who
+// never does, is what actually rules that out.
+it(
+  "tracks two different users' VFH independently, crediting only the one who stamped",
+  async () => {
+    const password = "password123";
+    const usernameA = `vfh-a-${randomUUID().slice(0, 8)}`;
+    const usernameB = `vfh-b-${randomUUID().slice(0, 8)}`;
 
-  const cookieA = await registerAndGetCookie(usernameA);
-  const cookieB = await registerAndGetCookie(usernameB);
+    const cookieA = await registerAndGetCookie(usernameA);
+    const cookieB = await registerAndGetCookie(usernameB);
 
-  await Promise.all([
-    earnSomeFocusMinutes(cookieA, "hancock", 1000),
-    earnSomeFocusMinutes(cookieB, "menzies", 2500),
-  ]);
+    const bSocket = connect(cookieB);
+    try {
+      await Promise.all([
+        earnOneVfh(cookieA, "robertson-common", "silent", "completed"),
+        (async () => {
+          // B stays the full block but never stamps during break — a ticket
+          // that's eligible (stayedFullBlock) but un-stamped still earns
+          // nothing, since getVfhCount requires stamp IS NOT NULL too.
+          await once(bSocket, "connect");
+          bSocket.emit("room:join", { slug: "chifley-lg", mode: "silent" });
+          await once(bSocket, "room:joined");
+          await once(bSocket, "room:update");
+          const sawFocus = untilStatus(bSocket, "focus");
+          bSocket.emit("room:submit-ticket", { body: "Read two chapters" });
+          await sawFocus;
+          await untilStatus(bSocket, "break");
+        })(),
+      ]);
 
-  const meA = await getMe(await loginAndGetCookie(usernameA, password));
-  const meB = await getMe(await loginAndGetCookie(usernameB, password));
+      const meA = await getMe(await loginAndGetCookie(usernameA, password));
+      const meB = await getMe(await loginAndGetCookie(usernameB, password));
 
-  expect(meA.username).toBe(usernameA);
-  expect(meB.username).toBe(usernameB);
-  expect(meA.focusMinutesTotal).toBeGreaterThan(0);
-  expect(meB.focusMinutesTotal).toBeGreaterThan(0);
-  // B waited more than twice as long as A, so its trace should reflect that
-  // — not just "both nonzero", which a shared or constant counter could also
-  // satisfy.
-  expect(meB.focusMinutesTotal!).toBeGreaterThan(meA.focusMinutesTotal!);
-});
+      expect(meA.username).toBe(usernameA);
+      expect(meB.username).toBe(usernameB);
+      expect(meA.vfhCount).toBe(1);
+      expect(meB.vfhCount).toBe(0);
+    } finally {
+      bSocket.close();
+    }
+  },
+  TABLE_CYCLE_MS * 2 + 20000,
+);

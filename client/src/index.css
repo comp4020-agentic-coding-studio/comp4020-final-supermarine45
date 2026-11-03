@@ -1,0 +1,94 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap");
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+
+  --color-paper: #f7f6f2;
+  --color-charcoal: #1f1d1a;
+  --color-slate: #8a8a8e;
+  --color-oled: #000000;
+  --color-amber: #d97706;
+  --color-amber-dim: #92400e;
+  --color-sage: #10b981;
+  --color-sage-dim: #065f46;
+  --color-espresso: #1c1917;
+  --color-terracotta: #e07a5f;
+  --color-cream: #f7f1e8;
+
+  /* ANU brand gold (ANU Web Style Guide) — wayfinding/navigation chrome only
+     (Header, LandingPage, BuildingPage). Never the live Table/focus/break
+     experience, which keeps CLAUDE.md §4's own palette untouched. */
+  --color-anu-gold: #be830e;
+  --color-anu-gold-tint: #f5edde;
+
+  /* Chrome-only theme tokens (dark/light toggle). Deliberately separate from
+     paper/charcoal/slate/oled/amber/sage/espresso/terracotta/cream above:
+     those are CLAUDE.md §4's fixed Table/focus/break palette and must render
+     identically no matter what the user picks here. Only pre/post-session
+     chrome (Header, Landing/Building/Room pages, ModePicker, AccountPage,
+     Login/Register) reads these. Light values below are the defaults; see
+     the [data-theme="dark"] block for overrides. */
+  --color-canvas: #f7f6f2;
+  --color-surface: #ffffff;
+  --color-surface-muted: rgba(0, 0, 0, 0.04);
+  --color-ink: #1f1d1a;
+  --color-ink-muted: #8a8a8e;
+  --color-line: rgba(0, 0, 0, 0.1);
+  --color-line-soft: rgba(0, 0, 0, 0.05);
+  --color-track: rgba(0, 0, 0, 0.08);
+
+  --animate-fade-in: fade-in 0.4s ease-out;
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+}
+
+[data-theme="dark"] {
+  --color-canvas: #19181c;
+  --color-surface: #242328;
+  --color-surface-muted: rgba(255, 255, 255, 0.05);
+  --color-ink: #ece9e3;
+  --color-ink-muted: #9a978f;
+  --color-line: rgba(255, 255, 255, 0.12);
+  --color-line-soft: rgba(255, 255, 255, 0.07);
+  --color-track: rgba(255, 255, 255, 0.14);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

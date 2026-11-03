@@ -32,10 +32,31 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Build and start the app
         # the same image Fly deploys, with a throwaway /data in place of the
-        # volume; the spec runs against it
+        # volume; the spec runs against it. TABLE_CYCLE_MS shortens the
+        # hourly matchmaker cycle to 18s — 15s focus / 3s break at the spec's
+        # fixed 50:10 split (production leaves it unset and gets a real hour)
+        # — there's no manual session-start anymore, so every
+        # scheduler-dependent spec has to wait out a real cycle mark plus a
+        # full focus block, and this is what keeps that measured in seconds
+        # instead of up to an hour. 3s of break is enough breathing room for
+        # a break-phase spec to stamp a ticket and send kudos without racing
+        # the phase's own end. See rooms.ts's TABLE_CYCLE_MS comment.
+        # TAB_HIDDEN_PENALTY_MS similarly shortens the tab-hidden demotion
+        # window to 8s (production leaves it unset and gets a real 60s) — left
+        # at its 60s default this would outlast the whole 15s test-speed focus
+        # block, so a demoted-mid-focus spec could never observe the table
+        # still in "focus" when the penalty lands. 8s leaves 7s of focus still
+        # to run afterward, and is comfortably longer than the single
+        # broadcast round-trip the warning-cleared-in-time spec waits on.
+        # CYCLE_START_GRANULARITY_MS similarly must track TABLE_CYCLE_MS here:
+        # every scheduler-dependent spec budgets its wait-for-focus timeout as
+        # TABLE_CYCLE_MS + 10000 (see rooms.ts's CYCLE_START_GRANULARITY_MS
+        # comment), which assumes an idle table's worst-case wait is bounded
+        # by TABLE_CYCLE_MS itself. Left unset, it would default to a real
+        # 5-minute wall-clock grid and every such spec would time out.
         run: |
           docker build -t app .
-          docker run -d --init --name app -p 8080:8080 -e PORT=8080 --tmpfs /data app
+          docker run -d --init --name app -p 8080:8080 -e PORT=8080 -e TABLE_CYCLE_MS=18000 -e TAB_HIDDEN_PENALTY_MS=8000 -e CYCLE_START_GRANULARITY_MS=18000 --tmpfs /data app
       - name: Run the spec
         run: pnpm check
         env:

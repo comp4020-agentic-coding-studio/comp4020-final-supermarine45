@@ -12,6 +12,7 @@ import { registerSocketHandlers, rearmTimers } from "./rooms.js";
 const PORT = Number(process.env.PORT ?? 8080);
 const DB_PATH = process.env.DB_PATH ?? "./data/app.db";
 const README_PATH = process.env.README_PATH ?? "./README.md";
+const CLIENT_DIST = process.env.CLIENT_DIST ?? "./client/dist";
 
 // Configured before openDb so a startup failure below already has somewhere
 // persistent to write to.
@@ -33,12 +34,22 @@ const io = new Server(httpServer);
 app.use(express.json());
 app.use(attachUser(db));
 app.use(express.static("public"));
+app.use(express.static(CLIENT_DIST));
 app.use("/auth", authRouter(db, io));
 app.use(pagesRouter(db, README_PATH));
 app.use(scheduleRouter(db, io));
 
+// SPA fallback: anything not already handled above (API routes, /readme/,
+// static assets) is a client-side route — serve the built index.html and let
+// React Router resolve it. Must stay registered after /readme/ above, or
+// invariants.test.ts's raw-HTML heading check would hit this instead.
+// Both an explicit "/" route and the "/*splat" wildcard are needed: in
+// Express 5's path-to-regexp, "/*splat" alone does not match the bare root.
 app.get("/", (_req, res) => {
-  res.sendFile("index.html", { root: "public" });
+  res.sendFile("index.html", { root: CLIENT_DIST });
+});
+app.get("/*splat", (_req, res) => {
+  res.sendFile("index.html", { root: CLIENT_DIST });
 });
 
 // Malformed input (e.g. a bad JSON body caught by express.json()) is the

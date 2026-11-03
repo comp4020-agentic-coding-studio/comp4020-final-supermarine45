@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { io, type Socket } from "socket.io-client";
 import { expect, inject, it } from "vitest";
+import { FOCUS_DURATION_MS, TABLE_CYCLE_MS } from "../src/rooms.js";
 
 const baseUrl = inject("baseUrl");
 
@@ -24,9 +25,11 @@ function once<T = unknown>(socket: Socket, event: string): Promise<T> {
   return new Promise((resolve) => socket.once(event, resolve));
 }
 
-function untilStatus(socket: Socket, status: string): Promise<{ timer: { status: string } }> {
+type RoomUpdate = { timer: { status: string; phaseEndAt: number; durationMs: number } };
+
+function untilStatus(socket: Socket, status: string): Promise<RoomUpdate> {
   return new Promise((resolve) => {
-    const handler = (payload: { timer: { status: string } }): void => {
+    const handler = (payload: RoomUpdate): void => {
       if (payload.timer.status === status) {
         socket.off("room:update", handler);
         resolve(payload);
@@ -36,60 +39,74 @@ function untilStatus(socket: Socket, status: string): Promise<{ timer: { status:
   });
 }
 
-it("gives a user who joins mid-block the server's authoritative remaining time", async () => {
-  const slug = "marie-reay";
-  const starterCookie = await registerAndGetCookie(`starter-${randomUUID().slice(0, 8)}`);
-  const latecomerCookie = await registerAndGetCookie(`latecomer-${randomUUID().slice(0, 8)}`);
+// No manual room:start-focus exists anymore (Decision 2) — the only way to
+// get a table into 'focus' is to board a ticket and wait for the scheduler's
+// own cycle mark, same as a real user would. Worst case, submitting the
+// ticket lands just after a mark already fired with nobody boarded (that mark
+// no-ops and simply re-arms — see beginScheduledFocus), so the test may have
+// to wait out two full cycles, not one; the timeout below accounts for that
+// rather than assuming the lucky case.
+it(
+  "gives a user who joins mid-block the server's authoritative remaining time",
+  async () => {
+    const slug = "marie-reay";
+    const mode = "silent";
+    const starterCookie = await registerAndGetCookie(`starter-${randomUUID().slice(0, 8)}`);
+    const latecomerCookie = await registerAndGetCookie(`latecomer-${randomUUID().slice(0, 8)}`);
 
-  const starter = connect(starterCookie);
-  try {
-    await once(starter, "connect");
-    starter.emit("room:join", { slug });
-    await once(starter, "room:update"); // initial idle state
-
-    const beforeStart = Date.now();
-    starter.emit("room:start-focus", { minutes: 25 });
-    const started = await once<{ timer: { status: string; phaseEndAt: number; durationMs: number } }>(
-      starter,
-      "room:update",
-    );
-    expect(started.timer.status).toBe("focus");
-
-    // Wait a couple of real seconds before the second user joins, so the
-    // remaining time it gets back must be measurably less than a full block.
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-
-    const latecomer = connect(latecomerCookie);
+    const starter = connect(starterCookie);
     try {
-      await once(latecomer, "connect");
-      const joinedAt = Date.now();
-      latecomer.emit("room:join", { slug });
-      const state = await once<{ timer: { status: string; phaseEndAt: number; durationMs: number } }>(
-        latecomer,
-        "room:update",
-      );
+      await once(starter, "connect");
+      starter.emit("room:join", { slug, mode });
+      await once(starter, "room:joined");
+      await once(starter, "room:update"); // initial idle state
 
-      expect(state.timer.status).toBe("focus");
-      const remainingAtJoin = state.timer.phaseEndAt - joinedAt;
-      const elapsedSinceStart = joinedAt - beforeStart;
-      const expectedRemaining = state.timer.durationMs - elapsedSinceStart;
+      const sawFocus = untilStatus(starter, "focus");
+      starter.emit("room:submit-ticket", { body: "Read two chapters" });
+      const started = await sawFocus;
+      expect(started.timer.status).toBe("focus");
 
-      // Within a couple of seconds of network/scheduling jitter, not a full
-      // fresh block — this is what distinguishes "synced" from "restarted".
-      expect(Math.abs(remainingAtJoin - expectedRemaining)).toBeLessThan(2000);
-      expect(remainingAtJoin).toBeLessThan(state.timer.durationMs - 1000);
+      // The server's own cycle mark decides when the block actually began,
+      // not the moment this test called emit() — unlike the old manual-start
+      // version, phaseStartedAt isn't "now" at submission time. Deriving it
+      // from the broadcast itself (phaseEndAt - durationMs) is exact, not an
+      // approximation from a client-side clock.
+      const beforeStart = started.timer.phaseEndAt - started.timer.durationMs;
+
+      // Wait a real slice of the block before the second user joins, so the
+      // remaining time it gets back must be measurably less than a full
+      // block. Scaled off FOCUS_DURATION_MS (capped at the old fixed 2s) so
+      // this stays meaningful under a short test-speed cycle instead of
+      // eating most of a several-second CI focus block.
+      const waitMs = Math.min(2000, Math.floor(FOCUS_DURATION_MS / 3));
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+
+      const latecomer = connect(latecomerCookie);
+      try {
+        await once(latecomer, "connect");
+        const joinedAt = Date.now();
+        latecomer.emit("room:join", { slug, mode });
+        await once(latecomer, "room:joined");
+        const state = await once<RoomUpdate>(latecomer, "room:update");
+
+        expect(state.timer.status).toBe("focus");
+        const remainingAtJoin = state.timer.phaseEndAt - joinedAt;
+        const elapsedSinceStart = joinedAt - beforeStart;
+        const expectedRemaining = state.timer.durationMs - elapsedSinceStart;
+
+        // Within a couple of seconds of network/scheduling jitter, not a full
+        // fresh block — this is what distinguishes "synced" from "restarted".
+        expect(Math.abs(remainingAtJoin - expectedRemaining)).toBeLessThan(2000);
+        expect(remainingAtJoin).toBeLessThan(state.timer.durationMs - 1000);
+      } finally {
+        latecomer.close();
+      }
     } finally {
-      latecomer.close();
+      // No manual reset exists anymore (Decision 2) — the table simply stays
+      // mid-focus/break until its own cycle mark rolls it over naturally.
+      // Just disconnect; there's nothing left to tear down server-side.
+      starter.close();
     }
-  } finally {
-    // Without this, the room is left mid-focus for a full 25 minutes and the
-    // next run of this test (against the same long-lived dev server) starts
-    // from an already-running room instead of idle. Closing starter
-    // immediately after emit() can also drop the reset packet before it
-    // flushes, so wait for starter's own idle broadcast before closing it.
-    const starterSawIdle = untilStatus(starter, "idle");
-    starter.emit("room:reset");
-    await starterSawIdle;
-    starter.close();
-  }
-});
+  },
+  TABLE_CYCLE_MS * 2 + 20000,
+);

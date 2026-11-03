@@ -10,10 +10,13 @@ FROM node:24.21.0-alpine AS build
 WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY client/package.json ./client/package.json
 RUN pnpm install --frozen-lockfile
 COPY tsconfig.app.json ./
 COPY src ./src
 RUN pnpm build
+COPY client ./client
+RUN pnpm --filter client run build
 
 FROM node:24.21.0-alpine AS runtime
 WORKDIR /app
@@ -22,6 +25,7 @@ RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 COPY --from=build /app/dist ./dist
+COPY --from=build /app/client/dist ./client/dist
 COPY public ./public
 COPY README.md ./README.md
 

@@ -2,9 +2,24 @@ import { Router } from "express";
 import type { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { marked } from "marked";
-import { countUpcomingSessions, findUserById, getLocationBySlug, isGuest, listLocations } from "../db.js";
+import {
+  acceptBuddy,
+  countUpcomingSessions,
+  findUserById,
+  getBuddyFeed,
+  getCognitiveDiet,
+  getHeatmap,
+  getHubStats,
+  getVfhCount,
+  isGuest,
+  listBuddies,
+  listLocations,
+  listStreaksForUser,
+  requestBuddy,
+} from "../db.js";
+import { requireRealUser } from "../auth.js";
 import { readRecentLog, type LogCategory } from "../logger.js";
-import { FOCUS_PRESETS_MIN } from "../rooms.js";
+import { ACTIVITY_MODE_INFO } from "../rooms.js";
 
 const LOG_CATEGORIES: readonly LogCategory[] = ["activity", "system", "status"];
 
@@ -17,14 +32,14 @@ export function pagesRouter(db: DatabaseSync, readmePath: string): Router {
       return;
     }
     if (isGuest(req.user.id)) {
-      res.json({ id: req.user.id, username: req.user.username, focusMinutesTotal: null, isGuest: true });
+      res.json({ id: req.user.id, username: req.user.username, vfhCount: null, isGuest: true });
       return;
     }
     const user = findUserById(db, req.user.id);
     res.json({
       id: req.user.id,
       username: req.user.username,
-      focusMinutesTotal: req.user.focus_minutes_total,
+      vfhCount: getVfhCount(db, req.user.id),
       isGuest: false,
       email: user?.email,
     });
@@ -38,7 +53,66 @@ export function pagesRouter(db: DatabaseSync, readmePath: string): Router {
   });
 
   router.get("/api/config", (_req, res) => {
-    res.json({ focusPresetsMin: FOCUS_PRESETS_MIN });
+    res.json({ activityModes: ACTIVITY_MODE_INFO });
+  });
+
+  // Strava-style profile reads, registered users only — mirrors the
+  // requireRealUser posture of other persistent-future/persistent-identity
+  // routes (e.g. schedule.ts's booking endpoints): meaningless for a guest
+  // identity that leaves no users row behind.
+  router.get("/api/me/heatmap", requireRealUser, (req, res) => {
+    const sinceDays = Math.min(Number(req.query.days) || 365, 365);
+    const since = Date.now() - sinceDays * 24 * 60 * 60 * 1000;
+    res.json({ days: getHeatmap(db, req.user!.id, since) });
+  });
+
+  router.get("/api/me/diet", requireRealUser, (req, res) => {
+    res.json({ modes: getCognitiveDiet(db, req.user!.id) });
+  });
+
+  router.get("/api/me/hub-stats", requireRealUser, (req, res) => {
+    res.json({ hubs: getHubStats(db, req.user!.id) });
+  });
+
+  router.get("/api/me/streaks", requireRealUser, (req, res) => {
+    res.json({ streaks: listStreaksForUser(db, req.user!.id) });
+  });
+
+  router.get("/api/me/buddies", requireRealUser, (req, res) => {
+    res.json({ buddies: listBuddies(db, req.user!.id) });
+  });
+
+  router.get("/api/me/buddy-feed", requireRealUser, (req, res) => {
+    const limit = Math.min(Number(req.query.limit) || 20, 100);
+    res.json({ feed: getBuddyFeed(db, req.user!.id, limit) });
+  });
+
+  router.post("/api/buddies/request", requireRealUser, (req, res) => {
+    const addresseeId = Number(req.body?.addresseeId);
+    if (!Number.isFinite(addresseeId)) {
+      res.status(400).json({ error: "addresseeId is required" });
+      return;
+    }
+    if (addresseeId === req.user!.id) {
+      res.status(400).json({ error: "cannot buddy yourself" });
+      return;
+    }
+    requestBuddy(db, req.user!.id, addresseeId);
+    res.status(201).json({ ok: true });
+  });
+
+  router.post("/api/buddies/:id/accept", requireRealUser, (req, res) => {
+    const requesterId = Number(req.params.id);
+    if (!Number.isFinite(requesterId)) {
+      res.status(400).json({ error: "invalid id" });
+      return;
+    }
+    const accepted = acceptBuddy(db, requesterId, req.user!.id);
+    if (!accepted) {
+      res.status(404).json({ error: "no pending request from that user" });
+      return;
+    }
+    res.status(200).json({ ok: true });
   });
 
   // Read-only tail of one of the three log streams (see logger.ts), exposed
@@ -58,27 +132,6 @@ export function pagesRouter(db: DatabaseSync, readmePath: string): Router {
     }
     const limit = Math.min(Number(req.query.limit) || 200, 1000);
     res.json({ lines: readRecentLog(category, limit) });
-  });
-
-  router.get("/login", (_req, res) => {
-    res.sendFile("login.html", { root: "public" });
-  });
-
-  router.get("/register", (_req, res) => {
-    res.sendFile("register.html", { root: "public" });
-  });
-
-  router.get("/account", (_req, res) => {
-    res.sendFile("account.html", { root: "public" });
-  });
-
-  router.get("/room/:slug", (req, res) => {
-    const location = getLocationBySlug(db, req.params.slug);
-    if (!location) {
-      res.status(404).send("No such ANU location.");
-      return;
-    }
-    res.sendFile("room.html", { root: "public" });
   });
 
   router.get("/readme/", (_req, res) => {

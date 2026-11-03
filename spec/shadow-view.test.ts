@@ -24,10 +24,13 @@ function once<T = unknown>(socket: Socket, event: string): Promise<T> {
   return new Promise((resolve) => socket.once(event, resolve));
 }
 
-function untilStatus(socket: Socket, status: string): Promise<{ timer: { status: string } }> {
+type RoomError = { error: string; action: string };
+type RoomUpdate = { tickets: Array<{ username: string }> };
+
+function untilTicketCount(socket: Socket, count: number): Promise<RoomUpdate> {
   return new Promise((resolve) => {
-    const handler = (payload: { timer: { status: string } }): void => {
-      if (payload.timer.status === status) {
+    const handler = (payload: RoomUpdate): void => {
+      if (payload.tickets.length === count) {
         socket.off("room:update", handler);
         resolve(payload);
       }
@@ -36,12 +39,13 @@ function untilStatus(socket: Socket, status: string): Promise<{ timer: { status:
   });
 }
 
-// A slug not used by any other spec file (same reasoning as
-// voting-resolution.test.ts): lets this run concurrently with the rest of
-// the suite against the same live server without state bleeding across files.
+// A slug not used by any other spec file: lets this run concurrently with the
+// rest of the suite against the same live server without state bleeding
+// across files.
 const slug = "law-l2";
+const mode = "silent";
 
-it("lets an unauthenticated socket watch a room's live state without being able to change it", async () => {
+it("lets an unauthenticated socket watch a table's live state without being able to change it", async () => {
   const residentCookie = await registerAndGetCookie(`resident-${randomUUID().slice(0, 8)}`);
   // Created back-to-back, right before listening for "connect" below — doing
   // the register call in between (an HTTP round trip) left enough of a gap
@@ -53,48 +57,43 @@ it("lets an unauthenticated socket watch a room's live state without being able 
     await Promise.all([once(shadow, "connect"), once(resident, "connect")]);
 
     // Read access: joining with no cookie at all still gets the same
-    // room:update and chat:history every signed-in viewer gets. Both
-    // listeners are attached before the emit's response can possibly land,
-    // since the server sends chat:history first — awaiting room:update alone
-    // first would risk missing chat:history before a listener existed for it.
-    shadow.emit("room:join", { slug });
-    const [shadowView] = await Promise.all([
-      once<{ timer: { status: string } }>(shadow, "room:update"),
-      once(shadow, "chat:history"),
-    ]);
-    expect(shadowView.timer.status).toBe("idle");
+    // room:joined/room:update every signed-in viewer gets.
+    shadow.emit("room:join", { slug, mode });
+    const shadowJoined = await once<{ isShadow: boolean }>(shadow, "room:joined");
+    expect(shadowJoined.isShadow).toBe(true);
+    const shadowView = await once<{ tickets: unknown[] }>(shadow, "room:update");
+    expect(Array.isArray(shadowView.tickets)).toBe(true);
 
-    resident.emit("room:join", { slug });
+    resident.emit("room:join", { slug, mode });
+    await once(resident, "room:joined");
     await once(resident, "room:update");
 
     // Write access: a mutation from the Shadow socket is silently rejected
     // server-side, not just hidden by client UI. Prove it by having the
-    // resident observe the room staying idle for a beat after the Shadow's
-    // attempt, rather than trusting the absence of a response from the
-    // Shadow itself.
-    let sawFocus = false;
-    resident.on("room:update", (payload: { timer: { status: string } }) => {
-      if (payload.timer.status === "focus") sawFocus = true;
+    // resident observe the ticket count staying unchanged for a beat after
+    // the Shadow's attempt, rather than trusting the absence of a response
+    // from the Shadow itself.
+    let sawTicket = false;
+    resident.on("room:update", (payload: RoomUpdate) => {
+      if (payload.tickets.length > 0) sawTicket = true;
     });
 
-    shadow.emit("room:start-focus", { minutes: 25 });
+    const shadowError = once<RoomError>(shadow, "room:error");
+    shadow.emit("room:submit-ticket", { body: "A shadow's ticket" });
+    expect(await shadowError).toEqual({ error: "unauthorized", action: "room:submit-ticket" });
     await new Promise((resolve) => setTimeout(resolve, 500));
-    expect(sawFocus).toBe(false);
+    expect(sawTicket).toBe(false);
 
-    // Confirm a real participant's own start-focus still works in the same
-    // room right after — the rejection above is about the Shadow's identity,
-    // not an accidental lock on the room itself.
-    resident.emit("room:start-focus", { minutes: 25 });
-    const started = await untilStatus(resident, "focus");
-    expect(started.timer.status).toBe("focus");
+    // Confirm a real participant's own ticket submission still works in the
+    // same table right after — the rejection above is about the Shadow's
+    // identity, not an accidental lock on the table itself.
+    const residentBoarded = untilTicketCount(resident, 1);
+    resident.emit("room:submit-ticket", { body: "A resident's real ticket" });
+    const boarded = await residentBoarded;
+    expect(boarded.tickets[0].username).toContain("resident-");
   } finally {
-    // Closing resident immediately after emit() can drop the reset packet
-    // before it flushes, leaving the room stuck mid-focus for the next run
-    // against this same long-lived dev server — wait for shadow's own idle
-    // broadcast first (it's still just watching, same as everyone else).
-    const shadowSawIdle = untilStatus(shadow, "idle");
-    resident.emit("room:reset");
-    await shadowSawIdle;
+    // No manual reset exists anymore (Decision 2) — tickets for this cycle
+    // simply stay until the next hourly cycle mark. Nothing to tear down.
     shadow.close();
     resident.close();
   }

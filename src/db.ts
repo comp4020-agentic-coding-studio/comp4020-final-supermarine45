@@ -2,9 +2,9 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-// The minimal shape a room/timer/chat/roster cares about — satisfied by both
-// a real, persisted User and a zero-persistence guest identity (see
-// isGuest()), so rooms.ts can treat them interchangeably.
+// The minimal shape a table/timer/roster cares about — satisfied by both a
+// real, persisted User and a zero-persistence guest identity (see isGuest()),
+// so rooms.ts can treat them interchangeably.
 export interface Identity {
   id: number;
   username: string;
@@ -32,15 +32,21 @@ export interface Location {
   buildingName: string;
 }
 
-export type RoomStatus = "idle" | "lobby" | "focus" | "review" | "break";
+// The 4 cognitive modes a student picks alongside a library hub. A "Table" is
+// keyed by (hub, mode) jointly — see room_state below — so up to 4 of these
+// can run concurrently at one hub, each with its own roster and timer.
+export type ActivityMode = "silent" | "writing" | "pitch" | "problem";
+export const ACTIVITY_MODES: readonly ActivityMode[] = ["silent", "writing", "pitch", "problem"];
+
+export type RoomStatus = "idle" | "focus" | "break";
 
 export interface RoomState {
-  location_id: number;
+  locationId: number;
+  activityMode: ActivityMode;
   status: RoomStatus;
-  phase_end_at: number | null;
-  phase_started_at: number | null;
-  duration_ms: number | null;
-  started_by: number | null;
+  phaseStartedAt: number | null;
+  phaseEndAt: number | null;
+  durationMs: number | null;
 }
 
 export interface ScheduledSession {
@@ -57,12 +63,85 @@ export interface UpcomingSessionForUser {
   startsAt: number;
 }
 
-export interface RoomGoal {
+export type TicketStamp = "completed" | "partial";
+
+export interface Ticket {
   id: number;
   locationId: number;
+  activityMode: ActivityMode;
+  userId: number;
+  // Snapshotted at submission time (and refreshed on re-submission) rather
+  // than joined from users.username — a guest has no users row to join
+  // against once they disconnect, and a ticket must still render a name
+  // after that (same problem the old room_state.started_by had, solved the
+  // same way via resolveStartedByUsername).
+  username: string;
+  cycleStartAt: number;
   body: string;
-  done: boolean;
-  createdBy: number;
+  stuck: boolean;
+  // When `stuck` was last set true; null while not stuck. Separate from the
+  // boolean (kept byte-for-byte for existing stuck-flag assertions) so the
+  // Stuck Queue can render in the order people actually raised their hand.
+  stuckAt: number | null;
+  stamp: TicketStamp | null;
+  // This cycle's Rollover Vote, if cast. Null until the user votes.
+  vote: "yes" | "no" | null;
+  stayedFullBlock: boolean;
+  createdAt: number;
+}
+
+export interface Kudos {
+  id: number;
+  ticketId: number;
+  fromUserId: number;
+  emoji: string;
+  createdAt: number;
+}
+
+export type BuddyStatus = "pending" | "accepted";
+
+export interface Buddy {
+  id: number;
+  requesterId: number;
+  addresseeId: number;
+  status: BuddyStatus;
+  createdAt: number;
+}
+
+export interface HeatmapEntry {
+  date: string;
+  count: number;
+}
+
+export interface CognitiveDietEntry {
+  mode: ActivityMode;
+  count: number;
+}
+
+export interface HubStatsEntry {
+  locationName: string;
+  count: number;
+}
+
+export interface BuddyFeedEntry {
+  ticketId: number;
+  username: string;
+  locationName: string;
+  activityMode: ActivityMode;
+  body: string;
+  stamp: TicketStamp | null;
+  cycleStartAt: number;
+}
+
+// A per-(user, hub, mode) Rollover Vote streak — separate from VFH. VFH
+// certifies "I finished and checked out"; this certifies "the table voted to
+// keep going, and I was one of the yes votes," which is why it resets to 0
+// on a no-vote, a non-vote, or a failed table-wide vote, not just a no-show.
+export interface StreakEntry {
+  locationName: string;
+  activityMode: ActivityMode;
+  currentStreak: number;
+  longestStreak: number;
 }
 
 const SEED_ENCOURAGEMENTS: string[] = [
@@ -203,7 +282,30 @@ function dropForeignKey(
   }
 }
 
+// The old schema keyed room_state on location_id alone (one timer per hub).
+// The Table model needs a composite (location_id, activity_mode) key instead
+// — up to 4 independent tables per hub — which SQLite can't retrofit via
+// ALTER TABLE. room_state only ever holds in-progress phase timing, never a
+// user's own data, so unlike chat/goals/focus-minutes below there's nothing
+// here worth preserving across the shape change: any row still mid-phase at
+// upgrade time would already have been reset to idle by reconcileRoomStates
+// under the old schema. Safe to call on every boot; a no-op once
+// activity_mode already exists (including on a brand-new DB, where
+// room_state doesn't exist yet and the CREATE TABLE below defines the new
+// shape directly).
+function migrateRoomStateToTableModel(db: DatabaseSync): void {
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'room_state'")
+    .all();
+  if (tables.length === 0) return;
+  const cols = db.prepare("PRAGMA table_info(room_state)").all() as unknown as Array<{ name: string }>;
+  if (cols.some((c) => c.name === "activity_mode")) return;
+  db.exec("DROP TABLE room_state");
+}
+
 function migrate(db: DatabaseSync): void {
+  migrateRoomStateToTableModel(db);
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -227,21 +329,28 @@ function migrate(db: DatabaseSync): void {
       expires_at INTEGER NOT NULL
     );
 
+    -- One row per (hub, mode) "Table". status: 'idle' | 'focus' | 'break'.
+    -- No started_by: under the automatic hourly scheduler nobody owns a
+    -- cycle, so nobody can start or cancel one early (see rooms.ts).
     CREATE TABLE IF NOT EXISTS room_state (
-      location_id INTEGER PRIMARY KEY REFERENCES locations(id),
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      location_id INTEGER NOT NULL REFERENCES locations(id),
+      activity_mode TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'idle',
+      phase_started_at INTEGER,
       phase_end_at INTEGER,
-      -- No REFERENCES users(id): a guest can start a block (see
-      -- resolveStartedByUsername's isGuest branch in rooms.ts), and a guest's
-      -- id is a synthetic negative number with no row in users at all.
-      started_by INTEGER
+      duration_ms INTEGER,
+      UNIQUE(location_id, activity_mode)
     );
 
+    -- Unused since the Table-model redesign (chat is a hard "no" per
+    -- CLAUDE.md's social-layer rules) — kept, not dropped, same
+    -- no-destructive-migration posture as every other table here.
     CREATE TABLE IF NOT EXISTS chat_messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       location_id INTEGER NOT NULL REFERENCES locations(id),
-      -- No REFERENCES users(id) for the same reason as room_state.started_by
-      -- above: guests can chat, and have no users row to reference.
+      -- No REFERENCES users(id): a guest can chat, and has no users row to
+      -- reference.
       user_id INTEGER NOT NULL,
       body TEXT NOT NULL,
       created_at INTEGER NOT NULL
@@ -255,35 +364,72 @@ function migrate(db: DatabaseSync): void {
       created_at INTEGER NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS room_goals (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      location_id INTEGER NOT NULL REFERENCES locations(id),
-      body TEXT NOT NULL,
-      done INTEGER NOT NULL DEFAULT 0,
-      created_by INTEGER NOT NULL,
-      created_at INTEGER NOT NULL
-    );
-
     CREATE TABLE IF NOT EXISTS encouragements (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       body TEXT NOT NULL
     );
+
+    -- A Deliverable Ticket: one per user per Table per hourly cycle. Mandatory
+    -- to board a Table (see countBoardedTickets / the 6-cap in rooms.ts).
+    CREATE TABLE IF NOT EXISTS tickets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      location_id INTEGER NOT NULL REFERENCES locations(id),
+      activity_mode TEXT NOT NULL,
+      -- No REFERENCES users(id): guests submit tickets too (Decision 7) and
+      -- have no users row to reference.
+      user_id INTEGER NOT NULL,
+      -- Snapshotted, not joined — see the Ticket interface's comment above.
+      username TEXT NOT NULL,
+      cycle_start_at INTEGER NOT NULL,
+      body TEXT NOT NULL,
+      stuck INTEGER NOT NULL DEFAULT 0,
+      stamp TEXT,
+      stayed_full_block INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      UNIQUE(location_id, activity_mode, user_id, cycle_start_at)
+    );
+
+    -- An emoji reaction left on a ticket during the break window. One per
+    -- (ticket, giver) pair.
+    CREATE TABLE IF NOT EXISTS kudos (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL REFERENCES tickets(id),
+      -- No REFERENCES users(id): guests can give kudos too.
+      from_user_id INTEGER NOT NULL,
+      emoji TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(ticket_id, from_user_id)
+    );
+
+    -- A Strava-style buddy connection between two registered users. Requests
+    -- and buddy visibility are gated to real users at the route layer
+    -- (requireRealUser) — a guest identity has nothing durable to connect.
+    CREATE TABLE IF NOT EXISTS buddies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      requester_id INTEGER NOT NULL,
+      addressee_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at INTEGER NOT NULL,
+      UNIQUE(requester_id, addressee_id)
+    );
+
+    -- A per-(user, hub, mode) Rollover Vote streak. Separate from VFH entirely
+    -- — VFH certifies full-block presence+stamp, this certifies "the group
+    -- chose to keep going, together, and I was one of the yes votes." No FK
+    -- on user_id: guests can vote and affect a table's tally but never accrue
+    -- a streak row (same precedent as VFH's guest exclusion below).
+    CREATE TABLE IF NOT EXISTS streaks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      location_id INTEGER NOT NULL REFERENCES locations(id),
+      activity_mode TEXT NOT NULL,
+      current_streak INTEGER NOT NULL DEFAULT 0,
+      longest_streak INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(user_id, location_id, activity_mode)
+    );
   `);
 
-  dropForeignKey(
-    db,
-    "room_state",
-    "started_by",
-    "users",
-    // Includes duration_ms/phase_started_at (added later via ensureColumn
-    // below) up front: the INSERT only copies whichever columns the live
-    // table actually has right now, so on a DB that predates those columns
-    // they're simply left NULL here and ensureColumn fills them in as usual.
-    "CREATE TABLE room_state (" +
-      "location_id INTEGER PRIMARY KEY REFERENCES locations(id), " +
-      "status TEXT NOT NULL DEFAULT 'idle', phase_end_at INTEGER, started_by INTEGER, " +
-      "duration_ms INTEGER, phase_started_at INTEGER)",
-  );
   dropForeignKey(
     db,
     "chat_messages",
@@ -298,20 +444,20 @@ function migrate(db: DatabaseSync): void {
   ensureColumn(db, "locations", "building_name", "building_name TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, "users", "email", "email TEXT NOT NULL DEFAULT ''");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (email)");
-  ensureColumn(db, "room_state", "duration_ms", "duration_ms INTEGER");
-  ensureColumn(db, "room_state", "phase_started_at", "phase_started_at INTEGER");
+  ensureColumn(db, "tickets", "stuck_at", "stuck_at INTEGER");
+  ensureColumn(db, "tickets", "vote", "vote TEXT");
 }
 
-// Insert-or-ignore per slug, rather than bailing out once any row exists, so
-// growing SEED_LOCATIONS (as this list has) adds the new spaces to an
-// already-seeded DB — prod's SQLite file lives on a persistent Fly volume,
-// not a fresh one per deploy.
+// Insert-or-ignore per (slug, mode), rather than bailing out once any row
+// exists, so growing SEED_LOCATIONS or ACTIVITY_MODES adds the new
+// rows to an already-seeded DB — prod's SQLite file lives on a persistent Fly
+// volume, not a fresh one per deploy.
 function seed(db: DatabaseSync): void {
   const insertLocation = db.prepare(
     "INSERT OR IGNORE INTO locations (slug, name, building_slug, building_name) VALUES (?, ?, ?, ?)",
   );
   const insertRoomState = db.prepare(
-    "INSERT OR IGNORE INTO room_state (location_id, status) VALUES (?, 'idle')",
+    "INSERT OR IGNORE INTO room_state (location_id, activity_mode, status) VALUES (?, ?, 'idle')",
   );
   const backfillBuilding = db.prepare(
     "UPDATE locations SET name = ?, building_slug = ?, building_name = ? " +
@@ -324,7 +470,9 @@ function seed(db: DatabaseSync): void {
     // them up to date with their (possibly renamed) current seed entry.
     backfillBuilding.run(location.name, location.buildingSlug, location.buildingName, location.slug);
     const row = findId.get(location.slug) as unknown as { id: number };
-    insertRoomState.run(row.id);
+    for (const mode of ACTIVITY_MODES) {
+      insertRoomState.run(row.id, mode);
+    }
   }
 }
 
@@ -338,12 +486,11 @@ function seedEncouragements(db: DatabaseSync): void {
 }
 
 // After a restart, a phase whose end time has already passed must not be
-// presented as still running — self-heal to idle rather than wedge the room.
+// presented as still running — self-heal to idle rather than wedge the table.
 function reconcileRoomStates(db: DatabaseSync): void {
   const now = Date.now();
   db.prepare(
-    "UPDATE room_state SET status = 'idle', phase_end_at = NULL, phase_started_at = NULL, " +
-      "duration_ms = NULL, started_by = NULL " +
+    "UPDATE room_state SET status = 'idle', phase_end_at = NULL, phase_started_at = NULL, duration_ms = NULL " +
       "WHERE status != 'idle' AND phase_end_at IS NOT NULL AND phase_end_at <= ?",
   ).run(now);
 }
@@ -369,13 +516,48 @@ export function getLocationById(db: DatabaseSync, id: number): Location | undefi
     | undefined;
 }
 
-export function getRoomState(db: DatabaseSync, locationId: number): RoomState {
+const ROOM_STATE_COLUMNS =
+  "location_id AS locationId, activity_mode AS activityMode, status, " +
+  "phase_started_at AS phaseStartedAt, phase_end_at AS phaseEndAt, duration_ms AS durationMs";
+
+// Plain select, assumes the row exists — safe because seed() eagerly creates
+// every (location, mode) pair at boot (104 rows today: 26 hubs × 4 modes),
+// the same guarantee getRoomState relied on for the old one-row-per-hub
+// shape.
+export function getTable(db: DatabaseSync, locationId: number, mode: ActivityMode): RoomState {
   return db
-    .prepare(
-      "SELECT location_id, status, phase_end_at, phase_started_at, duration_ms, started_by " +
-        "FROM room_state WHERE location_id = ?",
-    )
-    .get(locationId) as unknown as RoomState;
+    .prepare(`SELECT ${ROOM_STATE_COLUMNS} FROM room_state WHERE location_id = ? AND activity_mode = ?`)
+    .get(locationId, mode) as unknown as RoomState;
+}
+
+// Defensive convenience over getTable for callers that can't assume seed()
+// already ran for this exact pair (e.g. a location/mode added without a
+// server restart) — insert-or-ignore then select, same idempotent-on-every-
+// call shape as the rest of this file's upsert-style helpers.
+export function getOrCreateTable(db: DatabaseSync, locationId: number, mode: ActivityMode): RoomState {
+  db.prepare("INSERT OR IGNORE INTO room_state (location_id, activity_mode, status) VALUES (?, ?, 'idle')").run(
+    locationId,
+    mode,
+  );
+  return getTable(db, locationId, mode);
+}
+
+// The only writer of a table's phase fields — every transition (scheduler
+// firing, focus->break, break->idle) goes through this one function, mirroring
+// the single-writer convention every other mutable row in this file follows.
+export function setTableState(
+  db: DatabaseSync,
+  locationId: number,
+  mode: ActivityMode,
+  status: RoomStatus,
+  phaseStartedAt: number | null,
+  phaseEndAt: number | null,
+  durationMs: number | null,
+): void {
+  db.prepare(
+    "UPDATE room_state SET status = ?, phase_started_at = ?, phase_end_at = ?, duration_ms = ? " +
+      "WHERE location_id = ? AND activity_mode = ?",
+  ).run(status, phaseStartedAt, phaseEndAt, durationMs, locationId, mode);
 }
 
 export function createScheduledSession(
@@ -439,55 +621,306 @@ export function randomEncouragement(db: DatabaseSync): string | undefined {
   return row?.body;
 }
 
-export function addRoomGoal(db: DatabaseSync, locationId: number, body: string, createdBy: number): void {
-  db.prepare(
-    "INSERT INTO room_goals (location_id, body, done, created_by, created_at) VALUES (?, ?, 0, ?, ?)",
-  ).run(locationId, body, createdBy, Date.now());
+// --- tickets ---
+
+const TICKET_COLUMNS =
+  "id, location_id AS locationId, activity_mode AS activityMode, user_id AS userId, username, " +
+  "cycle_start_at AS cycleStartAt, body, stuck, stuck_at AS stuckAt, stamp, vote, " +
+  "stayed_full_block AS stayedFullBlock, created_at AS createdAt";
+
+type TicketRow = Omit<Ticket, "stuck" | "stayedFullBlock"> & { stuck: number; stayedFullBlock: number };
+
+function toTicket(row: TicketRow): Ticket {
+  return { ...row, stuck: row.stuck === 1, stayedFullBlock: row.stayedFullBlock === 1 };
 }
 
-export function listRoomGoals(db: DatabaseSync, locationId: number): RoomGoal[] {
+// Insert-or-update: submitting again before boarding just edits the same
+// cycle's ticket body (and refreshes username, in case a real user renamed
+// since) in place — stuck/stamp/stayedFullBlock are untouched by the DO
+// UPDATE, so editing a ticket never resets flags already set on it.
+export function upsertTicket(
+  db: DatabaseSync,
+  locationId: number,
+  mode: ActivityMode,
+  userId: number,
+  username: string,
+  cycleStartAt: number,
+  body: string,
+): void {
+  db.prepare(
+    "INSERT INTO tickets (location_id, activity_mode, user_id, username, cycle_start_at, body, created_at) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+      "ON CONFLICT(location_id, activity_mode, user_id, cycle_start_at) " +
+      "DO UPDATE SET body = excluded.body, username = excluded.username",
+  ).run(locationId, mode, userId, username, cycleStartAt, body, Date.now());
+}
+
+export function getTicket(
+  db: DatabaseSync,
+  locationId: number,
+  mode: ActivityMode,
+  userId: number,
+  cycleStartAt: number,
+): Ticket | undefined {
+  const row = db
+    .prepare(
+      `SELECT ${TICKET_COLUMNS} FROM tickets ` +
+        "WHERE location_id = ? AND activity_mode = ? AND user_id = ? AND cycle_start_at = ?",
+    )
+    .get(locationId, mode, userId, cycleStartAt) as unknown as TicketRow | undefined;
+  return row ? toTicket(row) : undefined;
+}
+
+// Every boarded ticket for one Table's current cycle, in submission order —
+// what the Table Dashboard renders as up-to-6 ticket cards.
+export function listTickets(
+  db: DatabaseSync,
+  locationId: number,
+  mode: ActivityMode,
+  cycleStartAt: number,
+): Ticket[] {
   const rows = db
     .prepare(
-      "SELECT id, location_id AS locationId, body, done, created_by AS createdBy FROM room_goals " +
-        "WHERE location_id = ? ORDER BY id ASC",
+      `SELECT ${TICKET_COLUMNS} FROM tickets ` +
+        "WHERE location_id = ? AND activity_mode = ? AND cycle_start_at = ? ORDER BY id ASC",
     )
-    .all(locationId) as unknown as Array<{
-    id: number;
-    locationId: number;
-    body: string;
-    done: number;
-    createdBy: number;
-  }>;
-  return rows.map((r) => ({ ...r, done: r.done === 1 }));
+    .all(locationId, mode, cycleStartAt) as unknown as TicketRow[];
+  return rows.map(toTicket);
 }
 
-// Flips done regardless of current value, scoped to locationId so a stray id
-// from another room can't be toggled.
-export function toggleRoomGoal(db: DatabaseSync, id: number, locationId: number): void {
+export function countBoardedTickets(
+  db: DatabaseSync,
+  locationId: number,
+  mode: ActivityMode,
+  cycleStartAt: number,
+): number {
+  const { count } = db
+    .prepare(
+      "SELECT COUNT(*) AS count FROM tickets WHERE location_id = ? AND activity_mode = ? AND cycle_start_at = ?",
+    )
+    .get(locationId, mode, cycleStartAt) as { count: number };
+  return count;
+}
+
+export function toggleStuck(
+  db: DatabaseSync,
+  locationId: number,
+  mode: ActivityMode,
+  userId: number,
+  cycleStartAt: number,
+): void {
   db.prepare(
-    "UPDATE room_goals SET done = CASE WHEN done = 1 THEN 0 ELSE 1 END WHERE id = ? AND location_id = ?",
-  ).run(id, locationId);
+    "UPDATE tickets SET stuck = CASE WHEN stuck = 1 THEN 0 ELSE 1 END, " +
+      "stuck_at = CASE WHEN stuck = 1 THEN NULL ELSE ? END " +
+      "WHERE location_id = ? AND activity_mode = ? AND user_id = ? AND cycle_start_at = ?",
+  ).run(Date.now(), locationId, mode, userId, cycleStartAt);
 }
 
-// Owner-only, matching deleteScheduledSession's pattern — returns whether
-// anything was actually deleted.
-export function deleteRoomGoal(db: DatabaseSync, id: number, requesterId: number): boolean {
-  const result = db.prepare("DELETE FROM room_goals WHERE id = ? AND created_by = ?").run(id, requesterId);
+export function stampTicket(
+  db: DatabaseSync,
+  locationId: number,
+  mode: ActivityMode,
+  userId: number,
+  cycleStartAt: number,
+  stamp: TicketStamp,
+): void {
+  db.prepare(
+    "UPDATE tickets SET stamp = ? WHERE location_id = ? AND activity_mode = ? AND user_id = ? AND cycle_start_at = ?",
+  ).run(stamp, locationId, mode, userId, cycleStartAt);
+}
+
+export function castVote(
+  db: DatabaseSync,
+  locationId: number,
+  mode: ActivityMode,
+  userId: number,
+  cycleStartAt: number,
+  vote: "yes" | "no",
+): void {
+  db.prepare(
+    "UPDATE tickets SET vote = ? WHERE location_id = ? AND activity_mode = ? AND user_id = ? AND cycle_start_at = ?",
+  ).run(vote, locationId, mode, userId, cycleStartAt);
+}
+
+// Called from the tab-penalty demotion path (rooms.ts) so a user demoted
+// mid-block can never earn VFH for this cycle even if they reconnect and
+// stamp afterward — VFH certifies full-block presence, not just an
+// honest-at-the-end checkout.
+export function markTicketNotFullBlock(
+  db: DatabaseSync,
+  locationId: number,
+  mode: ActivityMode,
+  userId: number,
+  cycleStartAt: number,
+): void {
+  db.prepare(
+    "UPDATE tickets SET stayed_full_block = 0 " +
+      "WHERE location_id = ? AND activity_mode = ? AND user_id = ? AND cycle_start_at = ?",
+  ).run(locationId, mode, userId, cycleStartAt);
+}
+
+// --- kudos ---
+
+// INSERT OR IGNORE against the (ticket_id, from_user_id) UNIQUE constraint,
+// so a duplicate or self-kudos attempt (self-kudos is blocked by the caller
+// before this runs) silently no-ops instead of throwing. The boolean return
+// lets the caller decide whether to broadcast.
+export function addKudos(db: DatabaseSync, ticketId: number, fromUserId: number, emoji: string): boolean {
+  const result = db
+    .prepare("INSERT OR IGNORE INTO kudos (ticket_id, from_user_id, emoji, created_at) VALUES (?, ?, ?, ?)")
+    .run(ticketId, fromUserId, emoji, Date.now());
   return result.changes > 0;
 }
 
-export function clearRoomGoals(db: DatabaseSync, locationId: number): void {
-  db.prepare("DELETE FROM room_goals WHERE location_id = ?").run(locationId);
+export function getKudosForTicket(db: DatabaseSync, ticketId: number): Kudos[] {
+  return db
+    .prepare(
+      "SELECT id, ticket_id AS ticketId, from_user_id AS fromUserId, emoji, created_at AS createdAt " +
+        "FROM kudos WHERE ticket_id = ? ORDER BY id ASC",
+    )
+    .all(ticketId) as unknown as Kudos[];
 }
 
-// Locations where this user's cycle is still running (not idle) — used by
-// account deletion to force those rooms back to idle before the user row
-// disappears, so started_by never dangles.
-export function locationsStartedBy(db: DatabaseSync, userId: number): number[] {
-  const rows = db
-    .prepare("SELECT location_id AS locationId FROM room_state WHERE started_by = ? AND status != 'idle'")
-    .all(userId) as unknown as Array<{ locationId: number }>;
-  return rows.map((r) => r.locationId);
+// --- streaks (Rollover Vote) ---
+
+// Raw current_streak, 0 if no row exists yet — unlike listStreaksForUser
+// (which only surfaces streaks > 0 for profile display), this returns the
+// true value including a just-reset 0, so tests can assert a reset actually
+// happened rather than merely "isn't listed."
+export function getStreak(db: DatabaseSync, userId: number, locationId: number, mode: ActivityMode): number {
+  const row = db
+    .prepare(
+      "SELECT current_streak AS currentStreak FROM streaks " +
+        "WHERE user_id = ? AND location_id = ? AND activity_mode = ?",
+    )
+    .get(userId, locationId, mode) as unknown as { currentStreak: number } | undefined;
+  return row?.currentStreak ?? 0;
+}
+
+// Guests (isGuest(userId)) are never passed here — callers skip them before
+// calling, same exclusion precedent as VFH.
+export function incrementStreak(db: DatabaseSync, userId: number, locationId: number, mode: ActivityMode): void {
+  db.prepare(
+    "INSERT INTO streaks (user_id, location_id, activity_mode, current_streak, longest_streak, updated_at) " +
+      "VALUES (?, ?, ?, 1, 1, ?) " +
+      "ON CONFLICT(user_id, location_id, activity_mode) DO UPDATE SET " +
+      "current_streak = current_streak + 1, " +
+      "longest_streak = MAX(longest_streak, current_streak + 1), " +
+      "updated_at = excluded.updated_at",
+  ).run(userId, locationId, mode, Date.now());
+}
+
+export function resetStreak(db: DatabaseSync, userId: number, locationId: number, mode: ActivityMode): void {
+  db.prepare(
+    "INSERT INTO streaks (user_id, location_id, activity_mode, current_streak, longest_streak, updated_at) " +
+      "VALUES (?, ?, ?, 0, 0, ?) " +
+      "ON CONFLICT(user_id, location_id, activity_mode) DO UPDATE SET " +
+      "current_streak = 0, updated_at = excluded.updated_at",
+  ).run(userId, locationId, mode, Date.now());
+}
+
+export function listStreaksForUser(db: DatabaseSync, userId: number): StreakEntry[] {
+  return db
+    .prepare(
+      "SELECT locations.name AS locationName, streaks.activity_mode AS activityMode, " +
+        "streaks.current_streak AS currentStreak, streaks.longest_streak AS longestStreak " +
+        "FROM streaks JOIN locations ON locations.id = streaks.location_id " +
+        "WHERE streaks.user_id = ? AND streaks.current_streak > 0 " +
+        "ORDER BY streaks.current_streak DESC",
+    )
+    .all(userId) as unknown as StreakEntry[];
+}
+
+// --- Verified Focus Hours & profile stats ---
+
+// 1 VFH per ticket that both stayed the full block and was stamped at
+// checkout — binary per block, never partial-minute (Decision 5).
+export function getVfhCount(db: DatabaseSync, userId: number): number {
+  const { count } = db
+    .prepare(
+      "SELECT COUNT(*) AS count FROM tickets WHERE user_id = ? AND stamp IS NOT NULL AND stayed_full_block = 1",
+    )
+    .get(userId) as { count: number };
+  return count;
+}
+
+export function getHeatmap(db: DatabaseSync, userId: number, sinceEpochMs: number): HeatmapEntry[] {
+  return db
+    .prepare(
+      "SELECT DATE(cycle_start_at / 1000, 'unixepoch') AS date, COUNT(*) AS count FROM tickets " +
+        "WHERE user_id = ? AND stamp IS NOT NULL AND stayed_full_block = 1 AND cycle_start_at >= ? " +
+        "GROUP BY date ORDER BY date ASC",
+    )
+    .all(userId, sinceEpochMs) as unknown as HeatmapEntry[];
+}
+
+export function getCognitiveDiet(db: DatabaseSync, userId: number): CognitiveDietEntry[] {
+  return db
+    .prepare(
+      "SELECT activity_mode AS mode, COUNT(*) AS count FROM tickets " +
+        "WHERE user_id = ? AND stamp IS NOT NULL AND stayed_full_block = 1 " +
+        "GROUP BY activity_mode ORDER BY count DESC",
+    )
+    .all(userId) as unknown as CognitiveDietEntry[];
+}
+
+export function getHubStats(db: DatabaseSync, userId: number): HubStatsEntry[] {
+  return db
+    .prepare(
+      "SELECT locations.name AS locationName, COUNT(*) AS count FROM tickets " +
+        "JOIN locations ON locations.id = tickets.location_id " +
+        "WHERE tickets.user_id = ? AND tickets.stamp IS NOT NULL AND tickets.stayed_full_block = 1 " +
+        "GROUP BY tickets.location_id ORDER BY count DESC",
+    )
+    .all(userId) as unknown as HubStatsEntry[];
+}
+
+// --- buddies ---
+
+export function requestBuddy(db: DatabaseSync, requesterId: number, addresseeId: number): void {
+  db.prepare(
+    "INSERT OR IGNORE INTO buddies (requester_id, addressee_id, status, created_at) VALUES (?, ?, 'pending', ?)",
+  ).run(requesterId, addresseeId, Date.now());
+}
+
+// requesterId/addresseeId identify the original request; the addressee is
+// who accepts it. Returns whether a pending request actually matched (so a
+// route can 404 on a bogus/foreign id instead of silently succeeding).
+export function acceptBuddy(db: DatabaseSync, requesterId: number, addresseeId: number): boolean {
+  const result = db
+    .prepare(
+      "UPDATE buddies SET status = 'accepted' WHERE requester_id = ? AND addressee_id = ? AND status = 'pending'",
+    )
+    .run(requesterId, addresseeId);
+  return result.changes > 0;
+}
+
+export function listBuddies(db: DatabaseSync, userId: number): Buddy[] {
+  return db
+    .prepare(
+      "SELECT id, requester_id AS requesterId, addressee_id AS addresseeId, status, created_at AS createdAt " +
+        "FROM buddies WHERE (requester_id = ? OR addressee_id = ?) AND status = 'accepted'",
+    )
+    .all(userId, userId) as unknown as Buddy[];
+}
+
+// Recent VFH-qualifying tickets from this user's accepted buddies — what the
+// Lobby/Profile "Buddy Feed" renders.
+export function getBuddyFeed(db: DatabaseSync, userId: number, limit = 20): BuddyFeedEntry[] {
+  return db
+    .prepare(
+      "SELECT tickets.id AS ticketId, tickets.username AS username, locations.name AS locationName, " +
+        "tickets.activity_mode AS activityMode, tickets.body AS body, tickets.stamp AS stamp, " +
+        "tickets.cycle_start_at AS cycleStartAt " +
+        "FROM tickets " +
+        "JOIN locations ON locations.id = tickets.location_id " +
+        "WHERE tickets.stamp IS NOT NULL AND tickets.stayed_full_block = 1 AND tickets.user_id IN (" +
+        "  SELECT addressee_id FROM buddies WHERE requester_id = ? AND status = 'accepted' " +
+        "  UNION " +
+        "  SELECT requester_id FROM buddies WHERE addressee_id = ? AND status = 'accepted'" +
+        ") ORDER BY tickets.cycle_start_at DESC LIMIT ?",
+    )
+    .all(userId, userId, limit) as unknown as BuddyFeedEntry[];
 }
 
 export function findUserById(db: DatabaseSync, id: number): User | undefined {
@@ -506,6 +939,25 @@ export function deleteUserScheduledSessions(db: DatabaseSync, userId: number): n
 
 export function deleteUserChatMessages(db: DatabaseSync, userId: number): void {
   db.prepare("DELETE FROM chat_messages WHERE user_id = ?").run(userId);
+}
+
+// Clears kudos left ON this user's tickets before the tickets themselves go,
+// since kudos.ticket_id has nothing else to cascade that for.
+export function deleteUserTickets(db: DatabaseSync, userId: number): void {
+  db.prepare("DELETE FROM kudos WHERE ticket_id IN (SELECT id FROM tickets WHERE user_id = ?)").run(userId);
+  db.prepare("DELETE FROM tickets WHERE user_id = ?").run(userId);
+}
+
+export function deleteUserKudosGiven(db: DatabaseSync, userId: number): void {
+  db.prepare("DELETE FROM kudos WHERE from_user_id = ?").run(userId);
+}
+
+export function deleteUserBuddies(db: DatabaseSync, userId: number): void {
+  db.prepare("DELETE FROM buddies WHERE requester_id = ? OR addressee_id = ?").run(userId, userId);
+}
+
+export function deleteUserStreaks(db: DatabaseSync, userId: number): void {
+  db.prepare("DELETE FROM streaks WHERE user_id = ?").run(userId);
 }
 
 export function deleteUserSessions(db: DatabaseSync, userId: number): void {

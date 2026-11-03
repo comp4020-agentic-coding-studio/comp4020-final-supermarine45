@@ -1,77 +1,156 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Server, Socket } from "socket.io";
-import type { Identity, Location, RoomStatus } from "./db.js";
+import type { ActivityMode, Identity, Location, RoomState, RoomStatus, Ticket } from "./db.js";
 import {
-  addRoomGoal,
-  clearRoomGoals,
+  ACTIVITY_MODES,
+  addKudos,
+  castVote,
+  countBoardedTickets,
   countUpcomingSessions,
-  deleteRoomGoal,
+  deleteUserBuddies,
   deleteUserChatMessages,
+  deleteUserKudosGiven,
   deleteUserRow,
   deleteUserScheduledSessions,
   deleteUserSessions,
+  deleteUserStreaks,
+  deleteUserTickets,
+  getKudosForTicket,
   getLocationBySlug,
-  getRoomState,
+  getOrCreateTable,
+  getTable,
+  getTicket,
+  incrementStreak,
   isGuest,
   listLocations,
-  listRoomGoals,
+  listTickets,
   listUpcomingSessions,
-  locationsStartedBy,
-  randomEncouragement,
-  toggleRoomGoal,
+  markTicketNotFullBlock,
+  resetStreak,
+  setTableState,
+  stampTicket,
+  toggleStuck,
+  upsertTicket,
 } from "./db.js";
+import type { TicketStamp } from "./db.js";
 import { createPseudonymIdentity } from "./auth.js";
 import { identityLabel, logRoomAction, logSystemAction } from "./logger.js";
 
-export const FOCUS_PRESETS_MIN = [10, 15, 25, 45, 50] as const;
-export const DEFAULT_FOCUS_MIN = 25;
-export const BREAK_DURATION_MS = 5 * 60 * 1000;
-// Focus Spark: a wordless, no-reload nudge a focused user can send to
-// everyone else running the same block, since chat itself is locked during
-// focus. Capped to one per person per window so it can't become a second
-// chat channel.
-export const SPARK_COOLDOWN_MS = 10 * 1000;
-// Fixed window to react to an unfinished shared goal list before the room
-// moves on to break regardless — short on purpose, since it's a decision
-// point ("extend or let it lapse"), not a second focus block.
-export const REVIEW_WINDOW_MS = 3 * 60 * 1000;
+// The hourly cycle: a table's focus block starts only on this boundary,
+// never on-demand — there is no manual "start" for anyone. Overridable so
+// the spec suite can run full cycles in seconds instead of waiting out a
+// real hour (same posture as every other real-timer spec in this codebase,
+// e.g. persistent-stats.test.ts waiting out real 1-2.5s blocks); production
+// falls back to a real hour, following server.ts's process.env.X ?? default
+// convention.
+export const TABLE_CYCLE_MS = Number(process.env.TABLE_CYCLE_MS) || 60 * 60 * 1000;
+// Derived from TABLE_CYCLE_MS (50:10 split, the spec's 50m-work/10m-break
+// ratio) rather than hardcoded absolute minutes, so overriding the cycle
+// length for tests scales the whole loop coherently instead of leaving a
+// real 50-minute focus phase stuck inside a test-speed cycle. Also
+// guarantees FOCUS_DURATION_MS + BREAK_DURATION_MS === TABLE_CYCLE_MS
+// exactly, by construction.
+export const FOCUS_DURATION_MS = Math.round(TABLE_CYCLE_MS * (50 / 60));
+export const BREAK_DURATION_MS = TABLE_CYCLE_MS - FOCUS_DURATION_MS;
+export const TABLE_CAPACITY = 6;
+
+// Independent granularity for when a new cycle may begin, separate from
+// TABLE_CYCLE_MS (which still governs the full 60-min arc once a cycle
+// starts). A table now gets a chance to start on any 5-minute wall-clock
+// mark instead of waiting for the top of the hour, shrinking the worst-case
+// wait from ~59 minutes to ~5 — the session's own length/shape is
+// unaffected. Same process.env.X || default convention as every other
+// timing constant in this file.
+export const CYCLE_START_GRANULARITY_MS = Number(process.env.CYCLE_START_GRANULARITY_MS) || 5 * 60 * 1000;
+
+const MAX_TICKET_LEN = 60;
+const VAGUE_TICKETS = new Set(["study", "work", "homework", "stuff", "things", "read", "reading"]);
+const KUDOS_EMOJI = new Set(["⚡", "☕", "🧠"]);
+// Defensive caps on the Whiteboard — a scratch surface for pasted
+// code/problem text, not an open-ended document.
+const MAX_WHITEBOARD_TEXT_LEN = 2000;
+const MAX_WHITEBOARD_HIGHLIGHTS = 100;
+
 // Programmatic honesty (Week 11): how long an Active user's tab may stay
 // hidden before the server demotes them back to Shadow. Server-timed and
 // server-enforced — the client only ever reports visibility, never the
-// verdict. See markTabHidden/applyTabPenalty.
-export const TAB_HIDDEN_PENALTY_MS = 60_000;
+// verdict. See markTabHidden/applyTabPenalty. Independently overridable from
+// TABLE_CYCLE_MS (same process.env.X || default convention) because it's a
+// fixed human-behavior constant, not a fraction of the hourly cycle — a
+// shortened test cycle needs this shortened too, or a 60s penalty could
+// never fire inside a test-speed focus block at all.
+export const TAB_HIDDEN_PENALTY_MS = Number(process.env.TAB_HIDDEN_PENALTY_MS) || 60_000;
 
-// Schelling points: a lobby's resolved focus block always lands on a
-// wall-clock :00/:30-second mark, so a group coordinating a start time
-// converges on the same mark without having to negotiate it directly. Every
-// 30 seconds rather than every 30 minutes, so a room reaches a decision
-// point often enough for the vote to actually be a live group moment instead
-// of a once-a-class-period event.
-export const GRID_INTERVAL_MS = 30 * 1000;
-// If the next mark is only moments away, push to the one after — a lobby
-// that resolves before anyone could plausibly vote isn't a vote.
-const MIN_LOBBY_MS = 5 * 1000;
-
-export function nextGridMark(now: number): number {
-  let mark = Math.ceil(now / GRID_INTERVAL_MS) * GRID_INTERVAL_MS;
-  if (mark - now < MIN_LOBBY_MS) mark += GRID_INTERVAL_MS;
-  return mark;
+export interface ActivityModeInfo {
+  mode: ActivityMode;
+  label: string;
+  description: string;
+  splitMinutes: number | null;
 }
 
-// Highest vote count wins; a tie breaks toward the shorter preset (consistent
-// with "removes choices" — when undecided, default to less commitment, not
-// more). No votes at all falls back to the room's default preset.
-export function resolveVotes(tally: Map<number, number>): number {
-  if (tally.size === 0) return DEFAULT_FOCUS_MIN;
-  let winner = DEFAULT_FOCUS_MIN;
-  let bestCount = -1;
-  for (const [minutes, count] of [...tally.entries()].sort((a, b) => a[0] - b[0])) {
-    if (count > bestCount) {
-      bestCount = count;
-      winner = minutes;
-    }
-  }
-  return winner;
+// Single source of truth for the 4 cognitive modes — same role
+// FOCUS_PRESETS_MIN used to play for /api/config. splitMinutes is the Solo
+// Gate -> Collab Phase boundary; null means no split (solo the whole block).
+export const ACTIVITY_MODE_INFO: ActivityModeInfo[] = [
+  { mode: "silent", label: "Silent Focus", description: "Heads-down, solo, the whole block.", splitMinutes: null },
+  {
+    mode: "writing",
+    label: "Writing Clinic",
+    description: "Solo drafting, then swap screens and give feedback.",
+    splitMinutes: 40,
+  },
+  {
+    mode: "pitch",
+    label: "Concept Pitch",
+    description: "Solo prep, then explain your concept out loud.",
+    splitMinutes: 40,
+  },
+  {
+    mode: "problem",
+    label: "Problem-Solving",
+    description: "Solo attempt, then rubber-duck the ones you're stuck on.",
+    splitMinutes: 40,
+  },
+];
+
+// splitMinutes is documented at the real 50-minute scale, but computed here
+// as a fraction of FOCUS_DURATION_MS rather than a hardcoded *60_000 — so
+// that a shortened TABLE_CYCLE_MS (test runs) scales the solo/collab split
+// point along with everything else, instead of the split threshold staying
+// pinned at a real-world minute count a test-speed focus block never reaches.
+function splitMsFor(mode: ActivityMode): number | null {
+  const minutes = ACTIVITY_MODE_INFO.find((m) => m.mode === mode)!.splitMinutes;
+  return minutes === null ? null : FOCUS_DURATION_MS * (minutes / 50);
+}
+
+// Generalizes the old nextGridMark (:00/:30 lobby marks) to a full-hour
+// cadence with no lobby/vote step at all — the next wall-clock boundary at
+// or after `now`. No "too soon to vote" guard is needed anymore (that
+// existed only to keep a lobby open long enough for humans to vote; a cycle
+// mark here just checks whether anyone's already boarded, instantaneous
+// either way).
+export function nextCycleMark(now: number, periodMs: number = TABLE_CYCLE_MS): number {
+  return Math.ceil(now / periodMs) * periodMs;
+}
+
+// 'silent' is solo for the full 50 minutes; the other three modes gate
+// collaboration behind their mode-specific split point. Computed fresh on
+// every broadcast during 'focus', never stored — same philosophy as this
+// file's derived remainingMs.
+export function computeSubphase(mode: ActivityMode, elapsedMs: number): "solo" | "collab" | null {
+  const split = splitMsFor(mode);
+  if (split === null) return null;
+  return elapsedMs < split ? "solo" : "collab";
+}
+
+// Deterministic, never stored: the earliest-boarded ticket for the current
+// cycle is the Pod Leader. Self-heals if that ticket is ever removed (e.g.
+// account deletion) since this is recomputed on every broadcast, same
+// philosophy as computeSubphase. Relies on listTickets' ORDER BY id ASC plus
+// upsertTicket's single synchronous statement to resolve simultaneous
+// boarding races deterministically, same as the existing 6-cap race.
+function leaderUserId(tickets: Ticket[]): number | null {
+  return tickets[0]?.userId ?? null;
 }
 
 interface Presence {
@@ -90,641 +169,556 @@ interface TimerPayload {
   status: RoomStatus;
   phaseEndAt: number | null;
   durationMs: number | null;
-  startedByUsername: string | null;
-}
-
-export interface VoteTally {
-  minutes: number;
-  count: number;
+  subphase: "solo" | "collab" | null;
 }
 
 interface RosterEntry {
+  userId: number;
   username: string;
-  focusMinutesTotal: number | null;
-  active: boolean;
   isGuest: boolean;
   tabHidden: boolean;
 }
 
-// location_id -> socketId -> presence. In-memory: who's actually connected
-// right now. room_state in the DB is the durable, authoritative timer state.
-const presence = new Map<number, Map<string, Presence>>();
-const scheduledTransitions = new Map<number, NodeJS.Timeout>();
-// Room-wide encouragement beats, keyed the same way. Deliberately a separate
-// map from scheduledTransitions: these are cosmetic and never re-armed after
-// a restart, unlike the authoritative phase transition above.
-const encouragementTimers = new Map<number, NodeJS.Timeout[]>();
-// Lobby vote tallies: location_id -> user_id -> chosen minutes. In-memory
-// only, same as presence — a lost vote on restart just means the lobby falls
-// back to the default preset, no different in severity from a missed
-// encouragement beat.
-const lobbyVotes = new Map<number, Map<number, number>>();
-// Spark rate limiting: location_id -> user_id -> last-sent timestamp (ms).
-// In-memory only, same reasoning as lobbyVotes — a cooldown lost to a
-// restart just means a user could send one spark early, no different in
-// severity from a missed encouragement beat.
-const sparkCooldowns = new Map<number, Map<number, number>>();
+// A table is keyed by (location, mode) jointly — up to 4 independent tables
+// per hub (Decision 1). All in-memory state below is keyed the same way, via
+// this combined string key, rather than nested per-location maps.
+function tableKey(locationId: number, mode: ActivityMode): string {
+  return `${locationId}:${mode}`;
+}
+
+function roomName(locationId: number, mode: ActivityMode): string {
+  return `table:${locationId}:${mode}`;
+}
+
+// tableKey -> socketId -> presence. In-memory: who's actually connected right
+// now. room_state in the DB is the durable, authoritative timer state.
+const presence = new Map<string, Map<string, Presence>>();
+// tableKey -> the one pending setTimeout driving this table's next
+// transition (idle-check, end-of-focus, or end-of-break — see the scheduler
+// below). Every table always has exactly one armed, even while idle.
+const scheduledTransitions = new Map<string, NodeJS.Timeout>();
+// tableKey -> the one-off timeout that forces a re-broadcast at a mode's
+// solo->collab split point. Deliberately separate from scheduledTransitions:
+// this one never changes DB state, it just makes the subphase flip show up
+// live instead of waiting for some other event to trigger a broadcast.
+const subphaseTimers = new Map<string, NodeJS.Timeout>();
 // Shadows (no socket.data.user) never enter `presence`, so they're invisible
 // to roster()/occupancy() — this tracks them separately, by socket id only
-// (no identity to keep), purely so the room/lobby can show "N watching".
-const shadowCounts = new Map<number, Set<string>>();
+// (no identity to keep), purely so the table/lobby can show "N watching".
+const shadowCounts = new Map<string, Set<string>>();
 
-function shadowCount(locationId: number): number {
-  return shadowCounts.get(locationId)?.size ?? 0;
+// The Breakout Whiteboard (Problem-Solving Collab only): a single shared,
+// continuously-overwritten scratch surface, not a message log — no sender,
+// no history, cleared at the start of every new focus cycle. In-memory only,
+// same precedent as presence/shadowCounts: a 10-minute scratch surface has
+// no persistence requirement, and a restart simply starts it empty again.
+interface WhiteboardState {
+  text: string;
+  highlights: { start: number; end: number; byUserId: number }[];
+  openedAt: number | null;
+}
+const whiteboards = new Map<string, WhiteboardState>();
+// tableKey -> the fallback timer that auto-opens the Whiteboard if the Leader
+// never clicks Launch, so a disengaged Leader can't block the table.
+const whiteboardFallbackTimers = new Map<string, NodeJS.Timeout>();
+// tableKey -> when the Rollover Vote opened this break (null/absent until
+// opened, by the Leader or by the fallback timer). Cleared at the start of
+// every new focus cycle, same lifetime as the whiteboard.
+const voteOpenedAt = new Map<string, number>();
+// tableKey -> the fallback timer that auto-opens voting near the end of
+// break if the Leader never clicks Initiate.
+const voteFallbackTimers = new Map<string, NodeJS.Timeout>();
+
+function shadowCount(locationId: number, mode: ActivityMode): number {
+  return shadowCounts.get(tableKey(locationId, mode))?.size ?? 0;
 }
 
-function tallyCounts(locationId: number): Map<number, number> {
-  const votes = lobbyVotes.get(locationId);
-  const counts = new Map<number, number>();
-  if (!votes) return counts;
-  for (const minutes of votes.values()) counts.set(minutes, (counts.get(minutes) ?? 0) + 1);
-  return counts;
-}
-
-function voteTally(locationId: number): VoteTally[] {
-  return [...tallyCounts(locationId).entries()].map(([minutes, count]) => ({ minutes, count }));
-}
-
-function roomName(locationId: number): string {
-  return `room:${locationId}`;
-}
-
-// A guest's username never lives in the DB, so a guest started_by can only
-// be resolved from whoever's still actually present in the room — if they've
-// since left, there's nothing left to recover it from, and that's fine: it's
-// display-only.
-function resolveStartedByUsername(db: DatabaseSync, locationId: number, startedBy: number): string | null {
-  if (isGuest(startedBy)) {
-    const room = presence.get(locationId);
-    if (!room) return null;
-    for (const p of room.values()) {
-      if (p.user.id === startedBy) return p.user.username;
+// presence is keyed by socket.id, not userId, so the same person connected
+// from two tabs (or a stray second socket) holds two entries here — merge
+// them to one roster row per person, or every userId-keyed consumer
+// downstream (unboardedRoster's filter, TableDashboard's .find(), and
+// React's key={r.userId} in PresentRoster) sees duplicate rows that don't
+// behave like duplicates: a boarded ticket clears the userId from the
+// *filter*, but a keyed list that briefly held two rows under the same key
+// can strand one of them in the DOM instead of removing it. tabHidden is
+// OR'd across a person's connections so any hidden tab still raises the
+// warning, matching the penalty mechanism's per-connection risk tracking.
+function roster(locationId: number, mode: ActivityMode): RosterEntry[] {
+  const table = presence.get(tableKey(locationId, mode));
+  if (!table) return [];
+  const byUser = new Map<number, RosterEntry>();
+  for (const p of table.values()) {
+    if (p.demoted) continue;
+    const existing = byUser.get(p.user.id);
+    if (existing) {
+      existing.tabHidden = existing.tabHidden || p.tabHiddenAt !== null;
+      continue;
     }
-    return null;
+    byUser.set(p.user.id, {
+      userId: p.user.id,
+      username: p.user.username,
+      isGuest: isGuest(p.user.id),
+      tabHidden: p.tabHiddenAt !== null,
+    });
   }
-  const row = db.prepare("SELECT username FROM users WHERE id = ?").get(startedBy) as unknown as
-    | { username: string }
-    | undefined;
-  return row?.username ?? null;
+  return [...byUser.values()];
 }
 
-// Describes what a joining user walked into, for the log line only — this is
-// the "did they join mid-session" question CLAUDE.md's logging requirement
-// asks about. Based on the same absolute phase_started_at/phase_end_at the
-// latecomer-sync broadcast itself relies on, so "X minutes into a Y-minute
-// block" is exact, not an approximation from whatever the client reports.
-function joinTimingNote(db: DatabaseSync, locationId: number): string {
-  const state = getRoomState(db, locationId);
-  if (state.status === "idle") return "Room was idle.";
-  if (state.status === "lobby") return "Joined during the pre-start lobby vote.";
-  if (state.status === "review") return "Joined during the post-focus review window.";
+// Reuses roster()'s own per-user de-duplication (see its comment above) so
+// the lobby's "N here" headcount can never disagree with the roster's own
+// length for the same table — otherwise a dual-connected person would count
+// twice here while appearing once in the roster list.
+function occupancy(locationId: number, mode: ActivityMode): number {
+  return roster(locationId, mode).length;
+}
+
+// Describes what a joining user walked into, for the log line only. Based on
+// the same absolute phase_started_at/phase_end_at the latecomer-sync
+// broadcast itself relies on, so "X minutes into a Y-minute block" is exact,
+// not an approximation from whatever the client reports.
+function joinTimingNote(db: DatabaseSync, locationId: number, mode: ActivityMode): string {
+  const state = getTable(db, locationId, mode);
+  if (state.status === "idle") return "Table was idle.";
   if (state.status === "break") return "Joined during break.";
-  // status === "focus"
-  const elapsedMin = (Date.now() - state.phase_started_at!) / 60_000;
-  const totalMin = state.duration_ms! / 60_000;
+  const elapsedMin = (Date.now() - state.phaseStartedAt!) / 60_000;
+  const totalMin = state.durationMs! / 60_000;
   return `Joined mid-session: ${elapsedMin.toFixed(1)} of ${totalMin} minutes into the focus block.`;
 }
 
-// Vote-casting handlers only carry a userId, not a socketId/Identity the way
-// most other logged actions do — this finds the matching presence entry so
-// vote log lines still read as "'username' voted ..." rather than a bare id.
-// Falls back to the id itself if the voter has since disconnected.
-function presenceIdentityLabel(locationId: number, userId: number): string {
-  const room = presence.get(locationId);
-  if (room) {
-    for (const p of room.values()) {
-      if (p.user.id === userId) return identityLabel(p.user, p.socketId);
-    }
-  }
-  return `user ${userId}`;
+// Which cycle's tickets a table's current status belongs to. During 'focus'
+// and 'break', phase_started_at is the focus cycle's start — on the
+// focus->break transition, phase_started_at is deliberately left untouched
+// (see endFocus) so a table's tickets stay addressable by the same
+// cycleStartAt all the way through its break. While 'idle', there's no
+// current cycle yet, so this reports the upcoming one (the one new tickets
+// are boarding for).
+function cycleStartAtFor(state: RoomState): number {
+  return state.status === "idle" ? nextCycleMark(Date.now(), CYCLE_START_GRANULARITY_MS) : state.phaseStartedAt!;
 }
 
-function timerPayload(db: DatabaseSync, locationId: number): TimerPayload {
-  const state = getRoomState(db, locationId);
-  const durationMs = state.status === "idle" ? null : state.duration_ms;
-  const startedByUsername =
-    state.status !== "idle" && state.started_by !== null
-      ? resolveStartedByUsername(db, locationId, state.started_by)
-      : null;
-  return { status: state.status, phaseEndAt: state.phase_end_at, durationMs, startedByUsername };
+function timerPayload(db: DatabaseSync, locationId: number, mode: ActivityMode): TimerPayload {
+  const state = getTable(db, locationId, mode);
+  const durationMs = state.status === "idle" ? null : state.durationMs;
+  const subphase = state.status === "focus" ? computeSubphase(mode, Date.now() - state.phaseStartedAt!) : null;
+  return { status: state.status, phaseEndAt: state.phaseEndAt, durationMs, subphase };
 }
 
-function roster(locationId: number): RosterEntry[] {
-  const room = presence.get(locationId);
-  if (!room) return [];
-  return [...room.values()]
-    .filter((p) => !p.demoted)
-    .map((p) => ({
-      username: p.user.username,
-      focusMinutesTotal: isGuest(p.user.id) ? null : p.user.focus_minutes_total,
-      active: true,
-      isGuest: isGuest(p.user.id),
-      tabHidden: p.tabHiddenAt !== null && !p.demoted,
-    }));
-}
-
-function occupancy(locationId: number): number {
-  const room = presence.get(locationId);
-  if (!room) return 0;
-  let count = 0;
-  for (const p of room.values()) if (!p.demoted) count += 1;
-  return count;
-}
-
+// Drives the hub landing page: every connected socket is already in the
+// "lobby" room regardless of what page it's on, so enriching this payload
+// with a per-mode breakdown is what feeds the ModePicker's live per-mode
+// counts with zero extra events or rooms to join.
 function broadcastLobby(io: Server, db: DatabaseSync): void {
   const locations = listLocations(db);
   const summary = locations.map((location) => {
-    const state = getRoomState(db, location.id);
+    const modes = ACTIVITY_MODES.map((mode) => {
+      const state = getTable(db, location.id, mode);
+      return {
+        mode,
+        status: state.status,
+        occupants: occupancy(location.id, mode),
+        ticketCount: countBoardedTickets(db, location.id, mode, cycleStartAtFor(state)),
+      };
+    });
     return {
       slug: location.slug,
       name: location.name,
       buildingSlug: location.buildingSlug,
       buildingName: location.buildingName,
-      occupants: occupancy(location.id),
-      shadowCount: shadowCount(location.id),
-      active: state.status === "focus",
+      occupants: modes.reduce((sum, m) => sum + m.occupants, 0),
+      shadowCount: ACTIVITY_MODES.reduce((sum, mode) => sum + shadowCount(location.id, mode), 0),
+      modes,
       upcomingCount: countUpcomingSessions(db, location.id),
     };
   });
   io.to("lobby").emit("lobby:update", summary);
 }
 
-// Exported so routes/schedule.ts can re-broadcast a room after planning or
-// cancelling a session, reusing this channel instead of a new event type.
-export function broadcastRoom(io: Server, db: DatabaseSync, locationId: number): void {
-  io.to(roomName(locationId)).emit("room:update", {
-    timer: timerPayload(db, locationId),
-    roster: roster(locationId),
-    shadowCount: shadowCount(locationId),
+// Exported so routes/schedule.ts can re-broadcast after planning or
+// cancelling a session. A booking is hub-level, not mode-specific
+// (scheduled_sessions has no activity_mode column), so calling this with no
+// mode fans out to all 4 of that hub's tables.
+export function broadcastRoom(io: Server, db: DatabaseSync, locationId: number, mode?: ActivityMode): void {
+  if (mode === undefined) {
+    for (const m of ACTIVITY_MODES) broadcastRoom(io, db, locationId, m);
+    return;
+  }
+  const state = getTable(db, locationId, mode);
+  const cycleStartAt = cycleStartAtFor(state);
+  const key = tableKey(locationId, mode);
+  const tickets = listTickets(db, locationId, mode, cycleStartAt);
+  const whiteboard = whiteboards.get(key);
+  io.to(roomName(locationId, mode)).emit("room:update", {
+    mode,
+    timer: timerPayload(db, locationId, mode),
+    cycleStartAt,
+    roster: roster(locationId, mode),
+    shadowCount: shadowCount(locationId, mode),
+    tickets: tickets.map((ticket) => ({
+      ...ticket,
+      kudos: getKudosForTicket(db, ticket.id),
+    })),
+    leaderUserId: leaderUserId(tickets),
+    whiteboardOpenedAt: whiteboard?.openedAt ?? null,
+    whiteboardText: whiteboard?.text ?? "",
+    whiteboardHighlights: whiteboard?.highlights ?? [],
+    voteOpenedAt: voteOpenedAt.get(key) ?? null,
+    capacity: TABLE_CAPACITY,
     upcoming: listUpcomingSessions(db, locationId),
-    goals: listRoomGoals(db, locationId),
-    votes: voteTally(locationId),
   });
 }
 
-// cutoff caps how far past phaseStartedAt a user's overlap can count — the
-// full block length on a normal transition, or "now" when a reset ends a
-// block early, so only actually-elapsed time is ever awarded. Guests are
-// skipped entirely — no DB row to credit, and "no rank or statistics" is
-// the whole point of an anonymous session.
-function awardFocusMinutes(
-  db: DatabaseSync,
-  locationId: number,
-  phaseStartedAt: number,
-  elapsedCapMs: number,
-): void {
-  const room = presence.get(locationId);
-  if (!room) return;
-  const cutoff = phaseStartedAt + elapsedCapMs;
-  const update = db.prepare(
-    "UPDATE users SET focus_minutes_total = focus_minutes_total + ? WHERE id = ?",
-  );
-  for (const p of room.values()) {
-    if (isGuest(p.user.id)) continue;
-    // A demoted user's counted overlap is capped at the moment their tab
-    // went hidden — they're not wiped to zero, just not credited for time
-    // after they stopped actually being present to focus.
-    const effectiveCutoff = p.demoted && p.tabHiddenAt !== null ? Math.min(cutoff, p.tabHiddenAt) : cutoff;
-    const overlapMs = effectiveCutoff - Math.max(p.joinedAt, phaseStartedAt);
-    if (overlapMs <= 0) continue;
-    const minutes = overlapMs / 60_000;
-    update.run(minutes, p.user.id);
-    p.user.focus_minutes_total += minutes;
-  }
+// ---------------------------------------------------------------------------
+// Scheduler: the sole driver of every focus-phase transition. Nobody can
+// start, cancel, or extend a table's timer (Decision 2) — a table's fate for
+// each hourly cycle is decided once, at the cycle mark, purely by whether
+// anyone boarded a ticket in time.
+// ---------------------------------------------------------------------------
+
+function clearTableTimer(key: string): void {
+  const existing = scheduledTransitions.get(key);
+  if (existing) clearTimeout(existing);
+  scheduledTransitions.delete(key);
+  const subphase = subphaseTimers.get(key);
+  if (subphase) clearTimeout(subphase);
+  subphaseTimers.delete(key);
+  // Easy to miss: without clearing these too, a rapid idle<->focus<->break
+  // transition (e.g. in tests) would leak a stale fallback timer or let it
+  // double-fire against the table's next cycle.
+  const whiteboardFallback = whiteboardFallbackTimers.get(key);
+  if (whiteboardFallback) clearTimeout(whiteboardFallback);
+  whiteboardFallbackTimers.delete(key);
+  const voteFallback = voteFallbackTimers.get(key);
+  if (voteFallback) clearTimeout(voteFallback);
+  voteFallbackTimers.delete(key);
 }
 
-function clearSchedule(locationId: number): void {
-  const timeout = scheduledTransitions.get(locationId);
-  if (timeout) {
-    clearTimeout(timeout);
-    scheduledTransitions.delete(locationId);
-  }
-}
-
-function clearEncouragements(locationId: number): void {
-  const timers = encouragementTimers.get(locationId);
-  if (timers) {
-    for (const timer of timers) clearTimeout(timer);
-    encouragementTimers.delete(locationId);
-  }
-}
-
-// Room-wide beats at 25/50/75% of a focus block's duration, so a 15-min and a
-// 50-min block both get exactly 3, proportionally spaced. Deliberately NOT
-// re-armed in rearmTimers like the authoritative phase timer is: a missed
-// beat after a server restart is cosmetic, not a correctness problem.
-function scheduleEncouragements(io: Server, db: DatabaseSync, locationId: number, durationMs: number): void {
-  clearEncouragements(locationId);
-  const timers = [0.25, 0.5, 0.75].map((fraction) => {
-    const timer = setTimeout(() => {
-      const body = randomEncouragement(db);
-      if (body) io.to(roomName(locationId)).emit("room:encouragement", { body });
-    }, Math.max(durationMs * fraction, 0));
-    timer.unref();
-    return timer;
-  });
-  encouragementTimers.set(locationId, timers);
-}
-
-function schedule(io: Server, db: DatabaseSync, locationId: number, delayMs: number): void {
-  clearSchedule(locationId);
-  const timeout = setTimeout(() => advancePhase(io, db, locationId), Math.max(delayMs, 0));
-  timeout.unref();
-  scheduledTransitions.set(locationId, timeout);
-}
-
-function advancePhase(io: Server, db: DatabaseSync, locationId: number): void {
-  const state = getRoomState(db, locationId);
+// Arms the next transition for one (location, mode) table, however far in
+// the future it is. Always re-arms after firing — a table's cadence never
+// stops on its own, regardless of outcome (empty cycle, full focus block, or
+// break), which is what makes a stale/duplicate timer impossible: there is
+// always exactly one live timeout per table in scheduledTransitions.
+function armNextTransition(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode): void {
+  const key = tableKey(locationId, mode);
+  clearTableTimer(key);
+  const state = getTable(db, locationId, mode);
   const now = Date.now();
-  if (state.status === "focus") {
-    awardFocusMinutes(db, locationId, state.phase_started_at!, state.duration_ms!);
-    clearEncouragements(locationId);
-    const goals = listRoomGoals(db, locationId);
-    const hasUnfinished = goals.some((g) => !g.done);
-    if (hasUnfinished) {
-      // Goals are kept, not cleared, going into review — the whole point is
-      // to look at what's still unchecked.
-      db.prepare(
-        "UPDATE room_state SET status = 'review', phase_end_at = ?, phase_started_at = ?, " +
-          "duration_ms = ? WHERE location_id = ?",
-      ).run(now + REVIEW_WINDOW_MS, now, REVIEW_WINDOW_MS, locationId);
-      schedule(io, db, locationId, REVIEW_WINDOW_MS);
-    } else {
-      db.prepare(
-        "UPDATE room_state SET status = 'break', phase_end_at = ?, phase_started_at = ?, " +
-          "duration_ms = ? WHERE location_id = ?",
-      ).run(now + BREAK_DURATION_MS, now, BREAK_DURATION_MS, locationId);
-      schedule(io, db, locationId, BREAK_DURATION_MS);
-    }
-  } else if (state.status === "review") {
-    // Nobody extended in time — the list is cleared, same as if it had never
-    // been unfinished, and the room moves on to break as normal.
-    clearRoomGoals(db, locationId);
-    db.prepare(
-      "UPDATE room_state SET status = 'break', phase_end_at = ?, phase_started_at = ?, duration_ms = ? " +
-        "WHERE location_id = ?",
-    ).run(now + BREAK_DURATION_MS, now, BREAK_DURATION_MS, locationId);
-    schedule(io, db, locationId, BREAK_DURATION_MS);
-  } else if (state.status === "break") {
-    db.prepare(
-      "UPDATE room_state SET status = 'idle', phase_end_at = NULL, phase_started_at = NULL, " +
-        "duration_ms = NULL, started_by = NULL WHERE location_id = ?",
-    ).run(locationId);
-  } else if (state.status === "lobby") {
-    // The grid mark has arrived: resolve the vote and begin the block for
-    // everyone at once. started_by is always set here — only startLobby
-    // enters this status, and it always sets it to the proposer.
-    const tally = tallyCounts(locationId);
-    const minutes = resolveVotes(tally);
-    const breakdown = voteTally(locationId)
-      .map((v) => `${v.minutes}m: ${v.count}`)
-      .join(", ");
-    logRoomAction(
-      db,
-      locationId,
-      "lobby",
-      `vote resolved to ${minutes} minutes${breakdown ? ` (${breakdown})` : " (no votes cast, default used)"}.`,
+
+  if (state.status === "focus" || state.status === "break") {
+    const delay = Math.max(0, state.phaseEndAt! - now);
+    scheduledTransitions.set(
+      key,
+      setTimeout(() => {
+        if (state.status === "focus") endFocus(io, db, locationId, mode);
+        else endBreak(io, db, locationId, mode);
+      }, delay),
     );
-    lobbyVotes.delete(locationId);
-    beginFocus(io, db, locationId, state.started_by!, minutes);
+    if (state.status === "focus") {
+      armSubphaseTimer(io, db, locationId, mode, state);
+      armWhiteboardFallbackTimer(io, db, locationId, mode, state);
+    } else {
+      armVoteFallbackTimer(io, db, locationId, mode, state);
+    }
     return;
   }
-  broadcastRoom(io, db, locationId);
-  broadcastLobby(io, db);
+
+  // Idle: wait for the next hourly mark, then decide whether anyone boarded.
+  // The mark is computed once, here, and threaded through to
+  // beginScheduledFocus rather than re-derived from Date.now() when the
+  // timeout fires — a few ms of ordinary timer slop past the mark would
+  // otherwise round nextCycleMark up to the *next* mark instead of the one
+  // that just elapsed.
+  const mark = nextCycleMark(now, CYCLE_START_GRANULARITY_MS);
+  scheduledTransitions.set(
+    key,
+    setTimeout(() => beginScheduledFocus(io, db, locationId, mode, mark), Math.max(0, mark - now)),
+  );
 }
 
-// On boot, any room still mid-focus/break/review (phase_end_at in the future
-// — an already-expired one was already reconciled to idle in db.ts) lost its
-// in-memory setTimeout to the restart and must have it re-armed, or it would
-// stay wedged in that phase forever once the clock runs out. Encouragement
-// beats are NOT re-armed here — see scheduleEncouragements' comment.
-export function rearmTimers(io: Server, db: DatabaseSync): void {
-  const now = Date.now();
-  const rows = db
-    .prepare("SELECT location_id AS locationId, phase_end_at AS phaseEndAt FROM room_state WHERE status != 'idle' AND phase_end_at IS NOT NULL")
-    .all() as unknown as Array<{ locationId: number; phaseEndAt: number }>;
-  for (const row of rows) {
-    schedule(io, db, row.locationId, Math.max(row.phaseEndAt - now, 0));
-  }
+// A one-off timeout purely to force a live re-broadcast at the solo->collab
+// split instant — no DB write, nothing to self-heal after a restart (a
+// restart during 'focus' just means clients recompute the current subphase
+// on their next render, same as computeSubphase already does on every
+// broadcast).
+function armSubphaseTimer(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, state: RoomState): void {
+  const split = splitMsFor(mode);
+  if (split === null) return;
+  const key = tableKey(locationId, mode);
+  const splitAt = state.phaseStartedAt! + split;
+  const delay = splitAt - Date.now();
+  if (delay <= 0) return;
+  subphaseTimers.set(
+    key,
+    setTimeout(() => broadcastRoom(io, db, locationId, mode), delay),
+  );
 }
 
-// Shared by startFocus, extendFocus, and lobby-vote resolution: writes the
-// focus phase, arms the phase-end timer and encouragement beats, and
-// broadcasts. Callers each keep their own distinct guard (idle-only,
-// review-only, or internal-to-advancePhase) before calling this.
-function beginFocus(io: Server, db: DatabaseSync, locationId: number, userId: number, minutes: number): void {
-  const now = Date.now();
-  const durationMs = minutes * 60_000;
-  db.prepare(
-    "UPDATE room_state SET status = 'focus', phase_end_at = ?, phase_started_at = ?, duration_ms = ?, " +
-      "started_by = ? WHERE location_id = ?",
-  ).run(now + durationMs, now, durationMs, userId, locationId);
-  schedule(io, db, locationId, durationMs);
-  scheduleEncouragements(io, db, locationId, durationMs);
-  broadcastRoom(io, db, locationId);
-  broadcastLobby(io, db);
+// A disengaged/AFK Leader must not be able to silently deny the whole table
+// a Whiteboard: 60s after the Collab transition, auto-open it if the Leader
+// still hasn't clicked Launch. Problem-Solving only — the only mode with a
+// Whiteboard at all.
+function armWhiteboardFallbackTimer(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, state: RoomState): void {
+  if (mode !== "problem") return;
+  const split = splitMsFor(mode);
+  if (split === null) return;
+  const key = tableKey(locationId, mode);
+  const fallbackAt = state.phaseStartedAt! + split + 60_000;
+  const delay = fallbackAt - Date.now();
+  if (delay <= 0) return;
+  whiteboardFallbackTimers.set(
+    key,
+    setTimeout(() => {
+      if (whiteboards.get(key)?.openedAt != null) return;
+      whiteboards.set(key, { text: "", highlights: [], openedAt: Date.now() });
+      logSystemAction(db, locationId, "System", `Whiteboard auto-opened for ${mode} (Leader fallback).`);
+      broadcastRoom(io, db, locationId, mode);
+    }, delay),
+  );
 }
 
-// The Lobby Override / FIFO lock: if two users emit room:start-focus (or any
-// other mutating event) at effectively the same millisecond, Socket.IO still
-// delivers them to this one Node process as two separate events on the event
-// loop, dequeued one at a time. Every handler on the path from "read
-// room_state" to "write room_state" runs synchronously end-to-end — no
-// `await` anywhere in between, and node:sqlite's DatabaseSync is itself
-// synchronous — so whichever event is dequeued first reads "idle", writes
-// "focus", and finishes its entire handler before the second event's handler
-// ever runs. There is no window in which the second handler can observe the
-// stale "idle" status. So this guard isn't just an optimization that usually
-// wins the race: it's the lock itself, enforced by the runtime's own
-// concurrency model rather than by any mutex this code has to build. The
-// first payload to arrive always wins outright; the second is rejected here,
-// unconditionally, with no partial effect on room state. The boolean return
-// lets callers (and tests) observe which outcome happened.
-export function startFocus(
+// Same fallback philosophy for the Rollover Vote: if the Leader never clicks
+// Initiate, auto-open voting near the end of break so the table still gets a
+// chance to vote before the cycle resolves. Scaled proportionally off
+// BREAK_DURATION_MS (like splitMsFor scales off FOCUS_DURATION_MS) so this
+// still fires at a sane point under a shortened test-speed cycle.
+function armVoteFallbackTimer(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, state: RoomState): void {
+  const key = tableKey(locationId, mode);
+  const fallbackAt = state.phaseEndAt! - BREAK_DURATION_MS * (2 / 10);
+  const delay = fallbackAt - Date.now();
+  if (delay <= 0) return;
+  voteFallbackTimers.set(
+    key,
+    setTimeout(() => {
+      if (voteOpenedAt.has(key)) return;
+      voteOpenedAt.set(key, Date.now());
+      logSystemAction(db, locationId, "System", `Rollover Vote auto-opened for ${mode} (Leader fallback).`);
+      broadcastRoom(io, db, locationId, mode);
+    }, delay),
+  );
+}
+
+function beginScheduledFocus(
   io: Server,
   db: DatabaseSync,
   locationId: number,
-  userId: number,
-  minutes: number,
-): boolean {
-  const state = getRoomState(db, locationId);
-  if (state.status !== "idle") return false;
-  if (!(FOCUS_PRESETS_MIN as readonly number[]).includes(minutes)) return false;
-  beginFocus(io, db, locationId, userId, minutes);
-  return true;
-}
-
-// Proposes a Schelling-point lobby: the room waits until the next wall-clock
-// :00/:30 mark, during which anyone present can vote on the block length.
-// Additive to startFocus, not a replacement — a room can still start
-// instantly via a preset, same as before.
-export function startLobby(io: Server, db: DatabaseSync, locationId: number, userId: number): void {
-  const state = getRoomState(db, locationId);
-  if (state.status !== "idle") return;
-  lobbyVotes.set(locationId, new Map());
-  const now = Date.now();
-  const phaseEndAt = nextGridMark(now);
-  db.prepare(
-    "UPDATE room_state SET status = 'lobby', phase_end_at = ?, phase_started_at = ?, duration_ms = ?, " +
-      "started_by = ? WHERE location_id = ?",
-  ).run(phaseEndAt, now, phaseEndAt - now, userId, locationId);
-  schedule(io, db, locationId, phaseEndAt - now);
-  broadcastRoom(io, db, locationId);
-  broadcastLobby(io, db);
-}
-
-// Casts (or changes) this user's vote for the current lobby's block length.
-// Rejected outright outside a lobby or for a non-preset length — identical
-// posture to startFocus/extendFocus ignoring an out-of-bounds minutes value.
-export function castVote(io: Server, db: DatabaseSync, locationId: number, userId: number, minutes: number): void {
-  const state = getRoomState(db, locationId);
-  if (state.status !== "lobby") return;
-  if (!(FOCUS_PRESETS_MIN as readonly number[]).includes(minutes)) return;
-  if (!lobbyVotes.has(locationId)) lobbyVotes.set(locationId, new Map());
-  const votes = lobbyVotes.get(locationId)!;
-  const previous = votes.get(userId);
-  votes.set(userId, minutes);
-  const identity = presenceIdentityLabel(locationId, userId);
-  const action =
-    previous === undefined ? `voted for a ${minutes}-minute block` : `changed vote from ${previous} to ${minutes} minutes`;
-  logRoomAction(db, locationId, identity, action);
-  broadcastRoom(io, db, locationId);
-}
-
-// Sends a transient "spark" ping to everyone currently in the room,
-// including the sender — only while a focus block is actually running (chat
-// itself is locked then, so this is the one live signal a focused user can
-// still send). Gated server-side on both status and a per-user cooldown,
-// independent of whatever the client's own button state shows, same posture
-// as every other mutating handler in this file. Each spark carries one
-// short encouraging line picked from the same pool the periodic room-wide
-// encouragement beats draw from (randomEncouragement) — system-chosen, not
-// user-typed, so it can't become a disguised chat channel. Everyone sees
-// the identical line for a given spark, which is why this broadcasts via
-// `io.to(...)` rather than `socket.to(...)`: the message only exists once
-// the server picks it, so there's no way to give the sender a true
-// zero-round-trip local echo of it the way a hardcoded string could.
-export function sendSpark(
-  io: Server,
-  socket: Socket,
-  db: DatabaseSync,
-  locationId: number,
-  userId: number,
-  username: string,
-): boolean {
-  const state = getRoomState(db, locationId);
-  if (state.status !== "focus") return false;
-  const cooldowns = sparkCooldowns.get(locationId) ?? new Map<number, number>();
-  sparkCooldowns.set(locationId, cooldowns);
-  const now = Date.now();
-  const last = cooldowns.get(userId);
-  if (last !== undefined && now - last < SPARK_COOLDOWN_MS) return false;
-  cooldowns.set(userId, now);
-  const message = randomEncouragement(db);
-  io.to(roomName(locationId)).emit("focus_spark", { username, message });
-  return true;
-}
-
-// Open to anyone currently in the room, whether the block is still running
-// or already in review — not gated to the original starter the way
-// resetRoom is, because adding time can never be used to grief the room the
-// way cutting a block short can. Whoever extends becomes the new
-// started_by, since starting authority already means "whoever is acting
-// now", and that keeps Reset meaningful for the extended block too.
-//
-// The two cases need different mechanics, not just different guards. From
-// review, the prior focus phase already ended and had its minutes awarded
-// (in advancePhase), so starting a fresh phase via beginFocus — resetting
-// phase_started_at to now — is correct; goals are kept, not cleared, since
-// extending is for finishing the same unfinished list. From an
-// already-running focus block, beginFocus would be wrong: resetting
-// phase_started_at to now would make awardFocusMinutes's eventual cutoff
-// (phase_started_at + duration_ms) forget everything that elapsed before
-// the extension. So this extends phase_end_at/duration_ms in place instead,
-// leaving phase_started_at untouched — same phase, just longer.
-export function extendFocus(
-  io: Server,
-  db: DatabaseSync,
-  locationId: number,
-  userId: number,
-  minutes: number,
+  mode: ActivityMode,
+  cycleStartAt: number,
 ): void {
-  const state = getRoomState(db, locationId);
-  if (!(FOCUS_PRESETS_MIN as readonly number[]).includes(minutes)) return;
-  if (state.status === "review") {
-    clearSchedule(locationId);
-    beginFocus(io, db, locationId, userId, minutes);
+  const boarded = countBoardedTickets(db, locationId, mode, cycleStartAt);
+  if (boarded === 0) {
+    logSystemAction(db, locationId, "System", `Cycle mark passed for ${mode} with no boarded tickets — staying idle.`);
+    armNextTransition(io, db, locationId, mode);
     return;
   }
-  if (state.status === "focus") {
-    const newEndAt = state.phase_end_at! + minutes * 60_000;
-    const newDurationMs = newEndAt - state.phase_started_at!;
-    db.prepare(
-      "UPDATE room_state SET phase_end_at = ?, duration_ms = ?, started_by = ? WHERE location_id = ?",
-    ).run(newEndAt, newDurationMs, userId, locationId);
-    clearSchedule(locationId);
-    schedule(io, db, locationId, newEndAt - Date.now());
-    scheduleEncouragements(io, db, locationId, newEndAt - Date.now());
-    broadcastRoom(io, db, locationId);
-    broadcastLobby(io, db);
-  }
-}
-
-// Ends whatever cycle is running right now, regardless of status — awards
-// partial focus minutes if the room was mid-focus, clears goals, clears any
-// pending phase/encouragement timers, and returns the room to idle. Shared
-// by resetRoom (ownership-gated, user-initiated) and account deletion
-// (ungated, system-initiated), so "end a room's cycle early" has exactly one
-// implementation.
-function forceEndRoom(io: Server, db: DatabaseSync, locationId: number): void {
-  const state = getRoomState(db, locationId);
-  if (state.status === "idle") return;
-  if (state.status === "focus") {
-    awardFocusMinutes(db, locationId, state.phase_started_at!, Date.now() - state.phase_started_at!);
-  }
-  clearSchedule(locationId);
-  clearEncouragements(locationId);
-  clearRoomGoals(db, locationId);
-  lobbyVotes.delete(locationId);
-  sparkCooldowns.delete(locationId);
-  db.prepare(
-    "UPDATE room_state SET status = 'idle', phase_end_at = NULL, phase_started_at = NULL, " +
-      "duration_ms = NULL, started_by = NULL WHERE location_id = ?",
-  ).run(locationId);
-  broadcastRoom(io, db, locationId);
+  // Fresh Whiteboard per cycle — a prior cycle's scratch text must never
+  // leak into the next one's Collab window.
+  whiteboards.delete(tableKey(locationId, mode));
+  setTableState(db, locationId, mode, "focus", cycleStartAt, cycleStartAt + FOCUS_DURATION_MS, FOCUS_DURATION_MS);
+  logSystemAction(db, locationId, "System", `Focus began for ${mode} with ${boarded} boarded ticket(s).`);
+  broadcastRoom(io, db, locationId, mode);
   broadcastLobby(io, db);
+  armNextTransition(io, db, locationId, mode);
 }
 
-// Only the person who started a cycle can end it early — restricted to avoid
-// one user cutting off everyone else's focus block now that lengths vary.
-// Also allowed during review and lobby (same started_by-only check), so
-// whoever's "in charge" can bail out immediately instead of always waiting
-// for the window to lapse. Leaving the room by navigating away remains
-// possible at any time regardless, for anyone — that's what "always have the
-// option to leave" actually requires, not a second in-room "quit" button.
-export function resetRoom(io: Server, db: DatabaseSync, locationId: number, userId: number): void {
-  const state = getRoomState(db, locationId);
-  if (state.status === "idle") return;
-  if (state.started_by !== userId) return;
-  forceEndRoom(io, db, locationId);
+// Focus -> break. phase_started_at is deliberately left pointing at the focus
+// cycle's start (not reset to "now") so tickets stay addressable by the same
+// cycleStartAt all the way through break — see cycleStartAtFor.
+function endFocus(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode): void {
+  const state = getTable(db, locationId, mode);
+  // Fresh vote window per break — any stale "opened" flag from a previous
+  // cycle (shouldn't exist, but keeps this self-healing) must not linger.
+  voteOpenedAt.delete(tableKey(locationId, mode));
+  setTableState(db, locationId, mode, "break", state.phaseStartedAt, Date.now() + BREAK_DURATION_MS, BREAK_DURATION_MS);
+  logSystemAction(db, locationId, "System", `Focus ended for ${mode}; break started.`);
+  broadcastRoom(io, db, locationId, mode);
+  broadcastLobby(io, db);
+  armNextTransition(io, db, locationId, mode);
 }
 
-// System-driven cascade for account deletion. Any room this user started
-// that's still mid-cycle is force-ended first (via the same forceEndRoom
-// resetRoom uses) so nobody else present loses credit and started_by never
-// dangles once the users row disappears underneath it. Scheduled sessions,
-// chat messages and every session row are deleted before the user row
-// itself; any socket(s) currently connected as this user are disconnected so
-// the client can redirect cleanly rather than sit on a dead identity.
-export function deleteAccount(io: Server, db: DatabaseSync, userId: number): void {
-  for (const locationId of locationsStartedBy(db, userId)) {
-    forceEndRoom(io, db, locationId);
+// Resolves the Rollover Vote and updates each boarded user's streak, before
+// the table state is wiped back to idle (and the cycle's tickets become
+// unaddressable for next cycle's query, since cycle_start_at will change).
+// Quorum: at least half of the cycle's boarded tickets must have cast a vote
+// at all, and among those cast, yes must outnumber no. Anyone who didn't
+// vote is treated as not continuing (same as an explicit "no") — this scales
+// with table size rather than using a flat vote-count threshold, so a
+// 6-person table can't be swung by one straggler's vote.
+function resolveVotesAndStreaks(db: DatabaseSync, locationId: number, mode: ActivityMode, cycleStartAt: number): void {
+  const tickets = listTickets(db, locationId, mode, cycleStartAt);
+  if (tickets.length === 0) return;
+  const yes = tickets.filter((t) => t.vote === "yes").length;
+  const no = tickets.filter((t) => t.vote === "no").length;
+  const quorumMet = yes + no >= Math.ceil(tickets.length / 2);
+  const passed = quorumMet && yes > no;
+  for (const ticket of tickets) {
+    if (isGuest(ticket.userId)) continue;
+    if (passed && ticket.vote === "yes") incrementStreak(db, ticket.userId, locationId, mode);
+    else resetStreak(db, ticket.userId, locationId, mode);
   }
-  const scheduleLocations = deleteUserScheduledSessions(db, userId);
+}
+
+function endBreak(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode): void {
+  const state = getTable(db, locationId, mode);
+  resolveVotesAndStreaks(db, locationId, mode, state.phaseStartedAt!);
+  setTableState(db, locationId, mode, "idle", null, null, null);
+  logSystemAction(db, locationId, "System", `Break ended for ${mode}; table idle.`);
+  broadcastRoom(io, db, locationId, mode);
+  broadcastLobby(io, db);
+  armNextTransition(io, db, locationId, mode);
+}
+
+// Boot-time self-heal: db.ts's own reconcileRoomStates() already resets any
+// phase whose end time had already passed by the time the process (re)started
+// — so by the time this runs, every table's row is honestly either idle, or
+// mid-focus/break with a phase_end_at still genuinely in the future. This
+// just arms the in-memory timer matching whatever reconcileRoomStates left
+// behind, for all 104 (location, mode) pairs, so a restart can never leave a
+// table silently un-scheduled or double-fire a transition that already
+// happened on a previous process's clock.
+export function rearmTimers(io: Server, db: DatabaseSync): void {
+  for (const location of listLocations(db)) {
+    for (const mode of ACTIVITY_MODES) {
+      getOrCreateTable(db, location.id, mode);
+      armNextTransition(io, db, location.id, mode);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tab-visibility telemetry (Week 11 carryover): a user whose tab stays hidden
+// for TAB_HIDDEN_PENALTY_MS is demoted — their Focus Ring goes dark and their
+// current-cycle ticket is marked not-full-block, so VFH withholds credit even
+// if they come back and stamp afterward. Demotion never evicts anyone or
+// frees their ticket's capacity slot, since the 6-cap is about boarded
+// tickets, not live connections — but it does revoke write access: every
+// mutating handler's guard re-checks isDemoted() live (findPresence(...)
+// .demoted), the same way it re-checks isShadow, since this fires from a
+// setTimeout with no reach into that connection's own closure state.
+// ---------------------------------------------------------------------------
+
+function findPresence(locationId: number, mode: ActivityMode, socketId: string): Presence | undefined {
+  return presence.get(tableKey(locationId, mode))?.get(socketId);
+}
+
+function markTabHidden(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, socketId: string): void {
+  const entry = findPresence(locationId, mode, socketId);
+  if (!entry || entry.tabHiddenAt !== null) return;
+  entry.tabHiddenAt = Date.now();
+  entry.penaltyTimeout = setTimeout(
+    () => applyTabPenalty(io, db, locationId, mode, socketId),
+    TAB_HIDDEN_PENALTY_MS,
+  );
+  broadcastRoom(io, db, locationId, mode);
+}
+
+function clearTabHidden(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, socketId: string): void {
+  const entry = findPresence(locationId, mode, socketId);
+  if (!entry || entry.tabHiddenAt === null) return;
+  entry.tabHiddenAt = null;
+  if (entry.penaltyTimeout) clearTimeout(entry.penaltyTimeout);
+  entry.penaltyTimeout = null;
+  broadcastRoom(io, db, locationId, mode);
+}
+
+function applyTabPenalty(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, socketId: string): void {
+  const entry = findPresence(locationId, mode, socketId);
+  if (!entry || entry.tabHiddenAt === null) return;
+  entry.demoted = true;
+  entry.penaltyTimeout = null;
+  const state = getTable(db, locationId, mode);
+  if (state.status === "focus") {
+    markTicketNotFullBlock(db, locationId, mode, entry.user.id, state.phaseStartedAt!);
+    logRoomAction(db, locationId, identityLabel(entry.user, socketId), "Demoted to Shadow after 60s of tab hidden.");
+  }
+  broadcastRoom(io, db, locationId, mode);
+}
+
+// ---------------------------------------------------------------------------
+// Account deletion: no ownership concept survives this redesign (Decision 2
+// removed `started_by` entirely), so there is no "force-end rooms I started"
+// step anymore — deleting a user is purely removing that user's own rows.
+// ---------------------------------------------------------------------------
+
+export function deleteAccount(io: Server, db: DatabaseSync, userId: number): void {
+  const affectedLocationIds = deleteUserScheduledSessions(db, userId);
   deleteUserChatMessages(db, userId);
+  deleteUserTickets(db, userId);
+  deleteUserKudosGiven(db, userId);
+  deleteUserBuddies(db, userId);
+  deleteUserStreaks(db, userId);
   deleteUserSessions(db, userId);
   deleteUserRow(db, userId);
-  for (const locationId of scheduleLocations) broadcastRoom(io, db, locationId);
-
-  for (const room of presence.values()) {
-    for (const [socketId, p] of room) {
-      if (p.user.id !== userId) continue;
-      const socket = io.sockets.sockets.get(socketId);
-      socket?.emit("account:deleted");
-      socket?.disconnect(true);
-    }
-  }
-}
-
-// Programmatic honesty (Week 11): a visible→hidden transition starts the
-// server-timed 60s window. Idempotent — a second tab_hidden before the
-// first clears is a no-op, so a flaky visibilitychange firing twice can't
-// restart the clock and buy more time.
-function markTabHidden(io: Server, db: DatabaseSync, locationId: number, socketId: string): void {
-  const p = presence.get(locationId)?.get(socketId);
-  if (!p || p.tabHiddenAt !== null) return;
-  p.tabHiddenAt = Date.now();
-  logRoomAction(db, locationId, identityLabel(p.user, socketId), "tab hidden. Warning broadcast. 60s timer started.");
-  broadcastRoom(io, db, locationId);
-  const timeout = setTimeout(() => applyTabPenalty(io, db, locationId, socketId), TAB_HIDDEN_PENALTY_MS);
-  timeout.unref();
-  p.penaltyTimeout = timeout;
-}
-
-// Returning before the deadline clears the warning outright — no partial
-// penalty, no record kept once visible again.
-function clearTabHidden(io: Server, db: DatabaseSync, locationId: number, socketId: string): void {
-  const p = presence.get(locationId)?.get(socketId);
-  if (!p || p.tabHiddenAt === null || p.demoted) return;
-  if (p.penaltyTimeout) clearTimeout(p.penaltyTimeout);
-  p.penaltyTimeout = null;
-  p.tabHiddenAt = null;
-  logRoomAction(db, locationId, identityLabel(p.user, socketId), "tab visible again. Warning cleared.");
-  broadcastRoom(io, db, locationId);
-}
-
-// Fires only if TAB_HIDDEN_PENALTY_MS elapsed with no tab_visible in
-// between (clearTabHidden would have cancelled this timeout otherwise).
-// Demotes the presence entry back to Shadow: cleared from socket.data.user
-// so every existing `if (!user) ...` guard below now correctly rejects
-// this socket for free, moved into shadowCounts so it still shows as
-// "watching", and filtered out of roster()/occupancy() immediately. The
-// entry itself is kept (not deleted) so awardFocusMinutes can still find it
-// and credit only up to tabHiddenAt.
-function applyTabPenalty(io: Server, db: DatabaseSync, locationId: number, socketId: string): void {
-  const p = presence.get(locationId)?.get(socketId);
-  if (!p || p.demoted) return;
-  p.demoted = true;
-  p.penaltyTimeout = null;
-  const socket = io.sockets.sockets.get(socketId);
-  if (socket) socket.data.user = undefined;
-  if (!shadowCounts.has(locationId)) shadowCounts.set(locationId, new Set());
-  shadowCounts.get(locationId)!.add(socketId);
-  logRoomAction(db, locationId, identityLabel(p.user, socketId), "60s penalty reached. User demoted.");
-  io.to(roomName(locationId)).emit("room:notice", `${p.user.username} lost focus and was removed.`);
-  broadcastRoom(io, db, locationId);
+  for (const locationId of affectedLocationIds) broadcastRoom(io, db, locationId);
   broadcastLobby(io, db);
 }
 
-// Server-Side Authority (Week 11): every mutating handler's guard calls this
-// on rejection instead of silently dropping the event, so an unauthorized
-// attempt gets an explicit payload back and a logged line, not just nothing.
-function rejectUnauthorized(
-  io: Server,
-  db: DatabaseSync,
-  socket: Socket,
-  locationId: number | null,
-  action: string,
-): void {
-  socket.emit("room:unauthorized", { error: "unauthorized", action });
-  logRoomAction(db, locationId, identityLabel(socket.data.user, socket.id), `attempted unauthorized ${action}. Rejected.`);
+// ---------------------------------------------------------------------------
+// Validation helpers for room:submit-ticket and room:send-kudos.
+// ---------------------------------------------------------------------------
+
+function ticketBodyError(body: unknown): string | null {
+  if (typeof body !== "string") return "invalid_ticket";
+  const trimmed = body.trim();
+  if (trimmed.length < 1 || trimmed.length > MAX_TICKET_LEN) return "invalid_ticket";
+  const nonSpace = trimmed.replace(/\s/g, "");
+  if (nonSpace.length < 3) return "invalid_ticket";
+  if (VAGUE_TICKETS.has(trimmed.toLowerCase())) return "invalid_ticket";
+  return null;
+}
+
+// Shared gate for every Whiteboard handler: Problem-Solving only, mid-focus,
+// and only once that cycle has reached its Collab subphase — the Whiteboard
+// doesn't exist outside that window.
+function whiteboardSubphaseOk(db: DatabaseSync, locationId: number, mode: ActivityMode): boolean {
+  if (mode !== "problem") return false;
+  const state = getTable(db, locationId, mode);
+  if (state.status !== "focus") return false;
+  return computeSubphase(mode, Date.now() - state.phaseStartedAt!) === "collab";
+}
+
+// ---------------------------------------------------------------------------
+// Socket handlers.
+// ---------------------------------------------------------------------------
+
+interface JoinedTable {
+  locationId: number;
+  mode: ActivityMode;
 }
 
 export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
   io.on("connection", (socket: Socket) => {
     socket.join("lobby");
+    let joined: JoinedTable | null = null;
+    let isShadow = false;
 
-    let joinedLocationId: number | null = null;
+    function currentIdentity(): Identity | undefined {
+      return socket.data.user as Identity | undefined;
+    }
 
-    // Shadow viewing: a socket with no user still joins the Socket.IO room
-    // and gets the same room:update/chat:history everyone else gets — it's
-    // just never added to presence, so it never appears in the roster or
-    // occupant count. Every *mutating* handler below independently checks
-    // `if (!user) return`, so this is the only gate that needed to move.
-    socket.on("room:join", ({ slug }: { slug: string }) => {
-      const user: Identity | undefined = socket.data.user;
-      const location: Location | undefined = getLocationBySlug(db, slug);
-      if (!location) {
-        socket.emit("room:error", "unknown location");
+    // applyTabPenalty() only flips Presence.demoted — it has no reach into
+    // this connection's own isShadow closure, since it fires from a
+    // setTimeout outside this closure and may run long after join-time set
+    // it. Every mutating handler below re-checks this live, the same way the
+    // old code's cleared socket.data.user was re-read live by every guard.
+    function isDemoted(): boolean {
+      if (!joined) return false;
+      return findPresence(joined.locationId, joined.mode, socket.id)?.demoted === true;
+    }
+
+    socket.on("room:join", ({ slug, mode }: { slug?: string; mode?: ActivityMode }) => {
+      if (joined) leaveTable(socket, io, db, joined, isShadow);
+      const location = typeof slug === "string" ? getLocationBySlug(db, slug) : undefined;
+      if (!location || !ACTIVITY_MODES.includes(mode as ActivityMode)) {
+        socket.emit("room:error", { error: "not_found", action: "room:join" });
         return;
       }
-      if (joinedLocationId !== null) leaveRoom(io, db, socket, joinedLocationId);
+      joined = { locationId: location.id, mode: mode as ActivityMode };
+      const key = tableKey(joined.locationId, joined.mode);
+      const user = currentIdentity();
 
-      joinedLocationId = location.id;
-      socket.join(roomName(location.id));
       if (user) {
-        if (!presence.has(location.id)) presence.set(location.id, new Map());
-        presence.get(location.id)!.set(socket.id, {
+        isShadow = false;
+        if (!presence.has(key)) presence.set(key, new Map());
+        presence.get(key)!.set(socket.id, {
           socketId: socket.id,
           user,
           joinedAt: Date.now(),
@@ -732,44 +726,42 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
           penaltyTimeout: null,
           demoted: false,
         });
+        logSystemAction(db, joined.locationId, identityLabel(user, socket.id), `Joined ${joined.mode}. ${joinTimingNote(db, joined.locationId, joined.mode)}`);
       } else {
-        if (!shadowCounts.has(location.id)) shadowCounts.set(location.id, new Set());
-        shadowCounts.get(location.id)!.add(socket.id);
+        isShadow = true;
+        if (!shadowCounts.has(key)) shadowCounts.set(key, new Set());
+        shadowCounts.get(key)!.add(socket.id);
       }
 
-      const recentChat = db
-        .prepare(
-          "SELECT chat_messages.body, chat_messages.created_at AS createdAt, users.username " +
-            "FROM chat_messages JOIN users ON users.id = chat_messages.user_id " +
-            "WHERE location_id = ? ORDER BY chat_messages.id DESC LIMIT 20",
-        )
-        .all(location.id)
-        .reverse();
-      socket.emit("chat:history", recentChat);
-      // The latecomer sync: broadcastRoom reaches everyone including the
-      // socket that just joined (it's already in the room), with the current
-      // authoritative state computed from the absolute phase_end_at — never
-      // a relative "time left" that would drift from when the block started.
-      broadcastRoom(io, db, location.id);
+      const { locationId: joinedLocationId, mode: joinedMode } = joined;
+      socket.join(roomName(joinedLocationId, joinedMode));
+      const state = getOrCreateTable(db, joinedLocationId, joinedMode);
+      const cycleStartAt = cycleStartAtFor(state);
+      const myTicket = user ? getTicket(db, joinedLocationId, joinedMode, user.id, cycleStartAt) : undefined;
+      socket.emit("room:joined", {
+        location: { slug: location.slug, name: location.name },
+        mode: joinedMode,
+        modeInfo: ACTIVITY_MODE_INFO.find((m) => m.mode === joinedMode),
+        myTicket: myTicket ?? null,
+        isShadow,
+      });
+      broadcastRoom(io, db, joinedLocationId, joinedMode);
       broadcastLobby(io, db);
-      logSystemAction(db, location.id, identityLabel(user, socket.id), `connected. ${joinTimingNote(db, location.id)}`);
     });
 
-    // Zero-Friction Identity (Week 11): a Shadow converts to Active in place
-    // by typing a pseudonym, no password or page reload needed for the
-    // conversion itself — only the one follow-up cookie-adoption request so
-    // this identity survives a refresh. Mirrors createGuestIdentity's
-    // negative-id convention exactly, just with a caller-chosen name.
-    socket.on("set_pseudonym", (payload?: { pseudonym?: string }) => {
-      if (socket.data.user) return; // already Active — nothing to convert
-      const trimmed = (payload?.pseudonym ?? "").trim().slice(0, 24);
-      if (!trimmed) return;
+    socket.on("set_pseudonym", ({ pseudonym }: { pseudonym?: string }) => {
+      if (!isShadow || typeof pseudonym !== "string") return;
+      const trimmed = pseudonym.trim().slice(0, 24);
+      if (trimmed.length < 1) return;
       const { token, identity } = createPseudonymIdentity(trimmed);
       socket.data.user = identity;
-      if (joinedLocationId !== null) {
-        shadowCounts.get(joinedLocationId)?.delete(socket.id);
-        if (!presence.has(joinedLocationId)) presence.set(joinedLocationId, new Map());
-        presence.get(joinedLocationId)!.set(socket.id, {
+      socket.emit("pseudonym:set", { token, identity });
+      if (joined) {
+        isShadow = false;
+        const key = tableKey(joined.locationId, joined.mode);
+        shadowCounts.get(key)?.delete(socket.id);
+        if (!presence.has(key)) presence.set(key, new Map());
+        presence.get(key)!.set(socket.id, {
           socketId: socket.id,
           user: identity,
           joinedAt: Date.now(),
@@ -777,167 +769,290 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
           penaltyTimeout: null,
           demoted: false,
         });
-        broadcastRoom(io, db, joinedLocationId);
+        logSystemAction(db, joined.locationId, identityLabel(identity, socket.id), `Set pseudonym and went Active in ${joined.mode}.`);
+        broadcastRoom(io, db, joined.locationId, joined.mode);
         broadcastLobby(io, db);
       }
-      logSystemAction(db, joinedLocationId, identityLabel(identity, socket.id), `joined as '${trimmed}'`);
-      socket.emit("pseudonym:set", { token });
     });
 
-    // Live Accountability (Week 11): the client reports Page Visibility
-    // changes verbatim; the server alone decides what a hidden tab means
-    // (an amber warning now, demotion if it doesn't clear within
-    // TAB_HIDDEN_PENALTY_MS) via markTabHidden/clearTabHidden below.
     socket.on("tab_hidden", () => {
-      const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) {
-        rejectUnauthorized(io, db, socket, joinedLocationId, "tab_hidden");
-        return;
-      }
-      markTabHidden(io, db, joinedLocationId, socket.id);
+      if (!joined || isShadow) return;
+      markTabHidden(io, db, joined.locationId, joined.mode, socket.id);
     });
 
     socket.on("tab_visible", () => {
-      const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) {
-        rejectUnauthorized(io, db, socket, joinedLocationId, "tab_visible");
-        return;
-      }
-      clearTabHidden(io, db, joinedLocationId, socket.id);
+      if (!joined || isShadow) return;
+      clearTabHidden(io, db, joined.locationId, joined.mode, socket.id);
     });
 
-    socket.on("room:start-focus", (payload?: { minutes?: number }) => {
-      const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) {
-        rejectUnauthorized(io, db, socket, joinedLocationId, "room:start-focus");
+    socket.on("room:submit-ticket", ({ body }: { body?: string }) => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:submit-ticket. Rejected.");
+        socket.emit("room:error", { error: "unauthorized", action: "room:submit-ticket" });
         return;
       }
-      startFocus(io, db, joinedLocationId, user.id, payload?.minutes ?? DEFAULT_FOCUS_MIN);
+      const error = ticketBodyError(body);
+      if (error) {
+        socket.emit("room:error", { error, action: "room:submit-ticket" });
+        return;
+      }
+      const { locationId, mode } = joined;
+      const state = getOrCreateTable(db, locationId, mode);
+      const cycleStartAt = cycleStartAtFor(state);
+      const existing = getTicket(db, locationId, mode, user.id, cycleStartAt);
+      if (!existing && countBoardedTickets(db, locationId, mode, cycleStartAt) >= TABLE_CAPACITY) {
+        socket.emit("room:error", { error: "table_full", action: "room:submit-ticket" });
+        return;
+      }
+      upsertTicket(db, locationId, mode, user.id, user.username, cycleStartAt, (body as string).trim());
+      logRoomAction(db, locationId, identityLabel(user, socket.id), `Submitted ticket for ${mode}: "${(body as string).trim()}"`);
+      broadcastRoom(io, db, locationId, mode);
+      broadcastLobby(io, db);
     });
 
-    socket.on("room:start-lobby", () => {
-      const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) {
-        rejectUnauthorized(io, db, socket, joinedLocationId, "room:start-lobby");
+    socket.on("room:toggle-stuck", () => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:toggle-stuck. Rejected.");
+        socket.emit("room:error", { error: "unauthorized", action: "room:toggle-stuck" });
         return;
       }
-      startLobby(io, db, joinedLocationId, user.id);
+      const { locationId, mode } = joined;
+      if (mode !== "problem") {
+        socket.emit("room:error", { error: "wrong_mode", action: "room:toggle-stuck" });
+        return;
+      }
+      const state = getTable(db, locationId, mode);
+      const cycleStartAt = cycleStartAtFor(state);
+      toggleStuck(db, locationId, mode, user.id, cycleStartAt);
+      broadcastRoom(io, db, locationId, mode);
     });
 
-    socket.on("room:vote", (payload?: { minutes?: number }) => {
-      const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null || typeof payload?.minutes !== "number") {
-        rejectUnauthorized(io, db, socket, joinedLocationId, "room:vote");
+    socket.on("room:stamp-ticket", ({ stamp }: { stamp?: TicketStamp }) => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:stamp-ticket. Rejected.");
+        socket.emit("room:error", { error: "unauthorized", action: "room:stamp-ticket" });
         return;
       }
-      castVote(io, db, joinedLocationId, user.id, payload.minutes);
+      const { locationId, mode } = joined;
+      const state = getTable(db, locationId, mode);
+      if (state.status !== "break" || (stamp !== "completed" && stamp !== "partial")) {
+        socket.emit("room:error", { error: "not_breaking", action: "room:stamp-ticket" });
+        return;
+      }
+      stampTicket(db, locationId, mode, user.id, state.phaseStartedAt!, stamp);
+      logRoomAction(db, locationId, identityLabel(user, socket.id), `Stamped ticket as ${stamp}.`);
+      broadcastRoom(io, db, locationId, mode);
     });
 
-    socket.on("room:reset", () => {
-      const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) {
-        rejectUnauthorized(io, db, socket, joinedLocationId, "room:reset");
+    socket.on("room:send-kudos", ({ toUserId, emoji }: { toUserId?: number; emoji?: string }) => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:send-kudos. Rejected.");
+        socket.emit("room:error", { error: "unauthorized", action: "room:send-kudos" });
         return;
       }
-      resetRoom(io, db, joinedLocationId, user.id);
+      const { locationId, mode } = joined;
+      const state = getTable(db, locationId, mode);
+      if (state.status !== "break" || typeof emoji !== "string" || !KUDOS_EMOJI.has(emoji)) {
+        socket.emit("room:error", { error: "not_breaking", action: "room:send-kudos" });
+        return;
+      }
+      if (toUserId === user.id) {
+        socket.emit("room:error", { error: "self_kudos", action: "room:send-kudos" });
+        return;
+      }
+      const recipientTicket = getTicket(db, locationId, mode, toUserId as number, state.phaseStartedAt!);
+      if (!recipientTicket) {
+        socket.emit("room:error", { error: "not_found", action: "room:send-kudos" });
+        return;
+      }
+      const given = addKudos(db, recipientTicket.id, user.id, emoji);
+      if (!given) {
+        socket.emit("room:error", { error: "already_given", action: "room:send-kudos" });
+        return;
+      }
+      logRoomAction(db, locationId, identityLabel(user, socket.id), `Sent ${emoji} kudos to '${recipientTicket.username}'.`);
+      broadcastRoom(io, db, locationId, mode);
     });
 
-    socket.on("room:extend", (payload?: { minutes?: number }) => {
-      const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) {
-        rejectUnauthorized(io, db, socket, joinedLocationId, "room:extend");
+    socket.on("room:launch-whiteboard", () => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:launch-whiteboard. Rejected.");
+        socket.emit("room:error", { error: "unauthorized", action: "room:launch-whiteboard" });
         return;
       }
-      extendFocus(io, db, joinedLocationId, user.id, payload?.minutes ?? DEFAULT_FOCUS_MIN);
+      const { locationId, mode } = joined;
+      if (!whiteboardSubphaseOk(db, locationId, mode)) {
+        socket.emit("room:error", { error: "wrong_mode", action: "room:launch-whiteboard" });
+        return;
+      }
+      const state = getTable(db, locationId, mode);
+      const tickets = listTickets(db, locationId, mode, cycleStartAtFor(state));
+      if (user.id !== leaderUserId(tickets)) {
+        socket.emit("room:error", { error: "not_leader", action: "room:launch-whiteboard" });
+        return;
+      }
+      whiteboards.set(tableKey(locationId, mode), { text: "", highlights: [], openedAt: Date.now() });
+      logRoomAction(db, locationId, identityLabel(user, socket.id), "Launched the Whiteboard.");
+      broadcastRoom(io, db, locationId, mode);
     });
 
-    socket.on("focus_spark", () => {
-      const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) {
-        rejectUnauthorized(io, db, socket, joinedLocationId, "focus_spark");
+    socket.on("room:whiteboard-paste", ({ text }: { text?: string }) => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:whiteboard-paste. Rejected.");
+        socket.emit("room:error", { error: "unauthorized", action: "room:whiteboard-paste" });
         return;
       }
-      sendSpark(io, socket, db, joinedLocationId, user.id, user.username);
+      const { locationId, mode } = joined;
+      if (!whiteboardSubphaseOk(db, locationId, mode)) {
+        socket.emit("room:error", { error: "wrong_mode", action: "room:whiteboard-paste" });
+        return;
+      }
+      const whiteboard = whiteboards.get(tableKey(locationId, mode));
+      if (!whiteboard || whiteboard.openedAt === null) {
+        socket.emit("room:error", { error: "not_open", action: "room:whiteboard-paste" });
+        return;
+      }
+      if (typeof text !== "string" || text.length > MAX_WHITEBOARD_TEXT_LEN) {
+        socket.emit("room:error", { error: "invalid_paste", action: "room:whiteboard-paste" });
+        return;
+      }
+      whiteboard.text = text;
+      broadcastRoom(io, db, locationId, mode);
     });
 
-    socket.on("room:goal-add", (payload?: { body?: string }) => {
-      const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) {
-        rejectUnauthorized(io, db, socket, joinedLocationId, "room:goal-add");
+    socket.on("room:whiteboard-highlight", ({ start, end }: { start?: number; end?: number }) => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:whiteboard-highlight. Rejected.");
+        socket.emit("room:error", { error: "unauthorized", action: "room:whiteboard-highlight" });
         return;
       }
-      const state = getRoomState(db, joinedLocationId);
-      if (state.status !== "idle") return;
-      const trimmed = (payload?.body ?? "").trim().slice(0, 200);
-      if (!trimmed) return;
-      addRoomGoal(db, joinedLocationId, trimmed, user.id);
-      broadcastRoom(io, db, joinedLocationId);
+      const { locationId, mode } = joined;
+      if (!whiteboardSubphaseOk(db, locationId, mode)) {
+        socket.emit("room:error", { error: "wrong_mode", action: "room:whiteboard-highlight" });
+        return;
+      }
+      const whiteboard = whiteboards.get(tableKey(locationId, mode));
+      if (!whiteboard || whiteboard.openedAt === null) {
+        socket.emit("room:error", { error: "not_open", action: "room:whiteboard-highlight" });
+        return;
+      }
+      if (
+        typeof start !== "number" ||
+        typeof end !== "number" ||
+        !Number.isFinite(start) ||
+        !Number.isFinite(end) ||
+        start < 0 ||
+        end < start
+      ) {
+        socket.emit("room:error", { error: "invalid_highlight", action: "room:whiteboard-highlight" });
+        return;
+      }
+      // Defensive cap, not a real UX limit — a runaway client shouldn't be
+      // able to grow this array unbounded for the whiteboard's 10-minute life.
+      if (whiteboard.highlights.length >= MAX_WHITEBOARD_HIGHLIGHTS) whiteboard.highlights.shift();
+      whiteboard.highlights.push({ start, end, byUserId: user.id });
+      broadcastRoom(io, db, locationId, mode);
     });
 
-    socket.on("room:goal-toggle", (payload?: { id?: number }) => {
-      const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null || typeof payload?.id !== "number") {
-        rejectUnauthorized(io, db, socket, joinedLocationId, "room:goal-toggle");
-        return;
-      }
-      toggleRoomGoal(db, payload.id, joinedLocationId);
-      broadcastRoom(io, db, joinedLocationId);
+    // Live cursors: a brand-new broadcast category, deliberately outside
+    // broadcastRoom/room:update. Never written to SQLite, never throttled
+    // server-side (the client self-throttles to ~20Hz before emitting), and
+    // excluded from the sender so nobody sees their own cursor echoed back.
+    // Silently dropped on a failed gate rather than room:error — this can
+    // fire many times a second and isn't a user-initiated action worth
+    // surfacing an error for, same posture as tab_hidden/tab_visible above.
+    socket.on("room:whiteboard-cursor", ({ x, y }: { x?: number; y?: number }) => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) return;
+      const { locationId, mode } = joined;
+      if (!whiteboardSubphaseOk(db, locationId, mode)) return;
+      const whiteboard = whiteboards.get(tableKey(locationId, mode));
+      if (!whiteboard || whiteboard.openedAt === null) return;
+      if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) return;
+      socket.to(roomName(locationId, mode)).emit("whiteboard:cursor", { userId: user.id, x, y });
     });
 
-    socket.on("room:goal-delete", (payload?: { id?: number }) => {
-      const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null || typeof payload?.id !== "number") {
-        rejectUnauthorized(io, db, socket, joinedLocationId, "room:goal-delete");
+    socket.on("room:cast-vote", ({ vote }: { vote?: "yes" | "no" }) => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:cast-vote. Rejected.");
+        socket.emit("room:error", { error: "unauthorized", action: "room:cast-vote" });
         return;
       }
-      const state = getRoomState(db, joinedLocationId);
-      if (state.status !== "idle") return;
-      if (!deleteRoomGoal(db, payload.id, user.id)) return;
-      broadcastRoom(io, db, joinedLocationId);
+      const { locationId, mode } = joined;
+      const state = getTable(db, locationId, mode);
+      if (state.status !== "break" || (vote !== "yes" && vote !== "no")) {
+        socket.emit("room:error", { error: "not_breaking", action: "room:cast-vote" });
+        return;
+      }
+      const ticket = getTicket(db, locationId, mode, user.id, state.phaseStartedAt!);
+      if (!ticket) {
+        socket.emit("room:error", { error: "not_found", action: "room:cast-vote" });
+        return;
+      }
+      castVote(db, locationId, mode, user.id, state.phaseStartedAt!, vote);
+      logRoomAction(db, locationId, identityLabel(user, socket.id), `Cast Rollover Vote: ${vote}.`);
+      broadcastRoom(io, db, locationId, mode);
     });
 
-    socket.on("chat:send", ({ body }: { body: string }) => {
-      const user: Identity | undefined = socket.data.user;
-      if (!user || joinedLocationId === null) {
-        rejectUnauthorized(io, db, socket, joinedLocationId, "chat:send");
+    socket.on("room:initiate-vote", () => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:initiate-vote. Rejected.");
+        socket.emit("room:error", { error: "unauthorized", action: "room:initiate-vote" });
         return;
       }
-      const state = getRoomState(db, joinedLocationId);
-      // Enforced here, server-side, regardless of what the sender's own UI
-      // shows — a client that ignores its own disabled input still can't
-      // chat. Review is deliberately left open by this check (it only blocks
-      // "focus") — review is exactly the moment people should be talking
-      // about what they did.
-      if (state.status === "focus") return;
-      const trimmed = body.trim().slice(0, 500);
-      if (!trimmed) return;
-      db.prepare(
-        "INSERT INTO chat_messages (location_id, user_id, body, created_at) VALUES (?, ?, ?, ?)",
-      ).run(joinedLocationId, user.id, trimmed, Date.now());
-      io.to(roomName(joinedLocationId)).emit("chat:message", {
-        username: user.username,
-        body: trimmed,
-        createdAt: Date.now(),
-      });
+      const { locationId, mode } = joined;
+      const state = getTable(db, locationId, mode);
+      if (state.status !== "break") {
+        socket.emit("room:error", { error: "not_breaking", action: "room:initiate-vote" });
+        return;
+      }
+      const tickets = listTickets(db, locationId, mode, cycleStartAtFor(state));
+      if (user.id !== leaderUserId(tickets)) {
+        socket.emit("room:error", { error: "not_leader", action: "room:initiate-vote" });
+        return;
+      }
+      voteOpenedAt.set(tableKey(locationId, mode), Date.now());
+      logRoomAction(db, locationId, identityLabel(user, socket.id), "Initiated the Rollover Vote.");
+      broadcastRoom(io, db, locationId, mode);
     });
 
     socket.on("disconnect", () => {
-      if (joinedLocationId !== null) leaveRoom(io, db, socket, joinedLocationId);
+      if (joined) leaveTable(socket, io, db, joined, isShadow);
     });
   });
 }
 
-function leaveRoom(io: Server, db: DatabaseSync, socket: Socket, locationId: number): void {
-  const p = presence.get(locationId)?.get(socket.id);
-  if (p) {
-    if (p.penaltyTimeout) clearTimeout(p.penaltyTimeout);
-    logSystemAction(db, locationId, identityLabel(p.user, socket.id), "disconnected");
+function leaveTable(socket: Socket, io: Server, db: DatabaseSync, joined: JoinedTable, isShadow: boolean): void {
+  const { locationId, mode } = joined;
+  const key = tableKey(locationId, mode);
+  if (isShadow) {
+    shadowCounts.get(key)?.delete(socket.id);
   } else {
-    logSystemAction(db, locationId, identityLabel(undefined, socket.id), "disconnected");
+    const entry = presence.get(key)?.get(socket.id);
+    if (entry?.penaltyTimeout) clearTimeout(entry.penaltyTimeout);
+    presence.get(key)?.delete(socket.id);
+    const user = socket.data.user as Identity | undefined;
+    if (user) logSystemAction(db, locationId, identityLabel(user, socket.id), `Left ${mode}.`);
   }
-  presence.get(locationId)?.delete(socket.id);
-  shadowCounts.get(locationId)?.delete(socket.id);
-  socket.leave(roomName(locationId));
-  broadcastRoom(io, db, locationId);
+  broadcastRoom(io, db, locationId, mode);
   broadcastLobby(io, db);
 }

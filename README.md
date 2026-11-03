@@ -1,73 +1,89 @@
-# Shut Up and Read: ANU Focus
+# Shut Up and Read
 
-A real-time, location-based study timer for ANU students. Sign in, pick a
-real ANU building and study space, and join whoever else is there now.
-Someone starts a focus block; everyone watches the same clock tick down,
-synced to the second, with no refresh. A 5-minute break opens the room's chat
-when it ends; the next block locks it again mid-sentence if it has to.
+A real-time, location-based study timer for ANU students, built around one
+rigid hourly loop instead of a pile of settings. Pick a real ANU library hub
+and one of four cognitive modes, drop a one-line Deliverable Ticket, and board
+a Table of up to six people. Everyone's clock is the same server-driven
+clock — there is no "start" button for anyone to press.
 
 ## The definition of good this app is built to
 
 Most "productivity" software fails by giving you more choices — more
 settings, more ways to customize until customizing becomes the
-procrastination. This app works by **removing** choices instead: you cannot
-create, name, or invite someone to a private room — every room is one of a
-fixed, hardcoded list of real ANU study spaces, alive because everyone in it
-is a provably real, logged-in account watching one clock the server drives,
-not a separate drifting clock per laptop. The server alone holds
-`phase_end_at`, so joining mid-block returns the true remaining time, never a
-freshly-restarted countdown.
+procrastination. This app works by **removing** choices instead: sessions
+start only on the hour, nobody can start one early or end one for the group,
+and a Table is one of a fixed, hardcoded list of real ANU study spaces, never
+a private room you create or name. The server alone holds `phase_end_at`, so
+joining mid-block returns the true remaining time, never a freshly-restarted
+countdown — and a mid-cycle server restart re-arms every Table's schedule
+from that same source of truth rather than losing the cadence.
 
 Good accountability software also knows when you are distracted, not just
-when you admit it. The room removes the honor system by using programmatic
-honesty — the Page Visibility API reporting a hidden tab straight to the
-server — to visually signal to the rest of the group who is actually doing
-the work, rather than trusting anyone's word for it.
+when you admit it. The Focus Ring around each boarded student dims the moment
+their tab goes hidden — the Page Visibility API reporting straight to the
+server — and a tab left hidden too long demotes that person back to a
+watching Shadow, withholding credit for the block even if they return and
+check out at the end.
 
-## What's deliberately missing
+## The loop: Table, Ticket, Split-Phase Timer, Break
 
-No private messages, friend requests, follower counts, or feeds — the brief
-was about building small, not chasing growth. The only channel between users
-is the room chat, open only during the break; the server rejects `chat:send`
-during focus regardless of the client UI.
+A Table is keyed by **hub + cognitive mode together** — Silent Focus, Writing
+Clinic, Concept Pitch, and Problem-Solving each run as their own independent
+Table at every hub, capped at six boarded students apiece. Boarding requires
+typing a 60-character Deliverable Ticket; generic filler ("study", "stuff",
+"things") is rejected server-side, not just discouraged client-side.
 
-## Identity, choice, and accountability
+Once the hour turns, a boarded Table's 50-minute focus block begins
+automatically for everyone on it at once. Silent Focus stays solo the whole
+block. The other three modes open a split-phase timer: a silent **Solo Gate**
+(amber) for the first stretch, then an **Open Collab** phase (sage green) —
+screens swap in Writing Clinic, pitches go out loud in Concept Pitch, the
+stuck get rubber-ducked in Problem-Solving. Problem-Solving is also the only
+mode where a ticket can be flagged "stuck," visible to the rest of the table
+the moment it's toggled.
 
-Signing up requires an `@anu.edu.au` address, but the username is still the
-only identity shown. A block's length is one of four fixed presets; whoever
-starts it can end it early, banking partial minutes, but nobody else can —
-extending stays open to everyone, since it can't grief the room. You can also
-plan a session ahead; this is **not** an integration with ANU's real booking
-system, so the page is honest about being its own planner plus a link to
-ANU's actual site. A shared goal list opens a short review window if
-unfinished when a block ends, where anyone can extend to finish it —
-otherwise it clears and the room moves to break.
+At 50 minutes, a break modal opens for ten minutes: check your ticket off as
+completed or partial progress, sit with a short mode-specific reflection
+prompt, then give kudos and optionally queue your ticket for the next cycle
+before the break ends and the Table goes idle again.
+
+## The "Strava for Studying" social layer
+
+Registered accounts persist Verified Focus Hours (VFH) — credited only when
+you stay for the entire block *and* check your ticket off at the break, not
+for merely showing up. A profile page shows a GitHub-style daily heatmap of
+VFH, a breakdown of which cognitive modes and which hubs you actually study
+in, and a Buddies list: accepted buddies' completed tickets surface in your
+feed. The only positive social signal is a fixed three-emoji Kudos, sent
+once per person per cycle, always at the break.
+
+## Strict social limits
+
+No photo uploads — every avatar is a typographic monogram. No direct
+messages, no chat rooms, no feeds beyond the Buddy feed above. The interface
+avoids ticking seconds and other low-value motion on principle: the timer
+shows whole minutes only, flipping once a minute rather than once a second.
 
 ## Watching, and joining anonymously
 
-Anyone can watch a room's live timer, roster, and chat without signing in, as
-a "watching" count distinct from the roster; every mutating action is
-rejected server-side regardless of the client. "Continue anonymously" grants
-a random name with full participation parity, withholding only what needs a
-persistent identity: stats, planning, a database row.
+Anyone can watch a Table's live timer and roster without signing in, counted
+separately from the boarded roster; every mutating action is rejected
+server-side regardless of what the client sends. "Continue anonymously"
+grants a random guest name with full participation parity — ticket, timer,
+kudos, the Focus Ring — withholding only what needs a persistent identity:
+VFH, the heatmap, buddies.
 
-## Multi-user decisions this app had to make
+## Concurrency and the six-seat cap
 
-Two decisions matter most once people share one room. First: anyone can
-propose a group vote instead of picking a preset alone. The block waits for
-the next `:00`/`:30`-second wall-clock mark, and until then anyone present
-casts a live, re-votable tally; most votes wins, a tie goes shorter, letting
-a group converge on a shared start time without negotiating it directly.
-Second: nothing stops two people reaching for "start," or toggling the same
-goal, at once. Node handles one event at a time with no `await` between
-reading and writing state, so exactly one request takes effect and every
-client converges on the identical result — the same guarantee that resyncs a
-dropped connection on reconnect. During focus, chat is locked but a single
-wordless "spark" — a rate-limited, system-picked encouraging line — is still
-live.
+Node handles one socket event at a time with no `await` between reading and
+writing state, so when two people reach for a Table's sixth seat at once,
+exactly one ticket is accepted and the other is rejected with `table_full` —
+never a seventh seat, never a silently dropped request. The same guarantee
+resyncs a dropped connection on reconnect: rejoining mid-block returns the
+Table's true current state, not a stale or restarted one.
 
 ## Deleting an account, completely
 
-Deletion requires re-entering your password and removes chat history and
-planned sessions, not just the login. A running block ends first, banking
-everyone's partial minutes before the room goes idle.
+Deletion requires re-entering your password and removes that user's tickets,
+kudos, buddy connections, and planned sessions — it never touches the shared
+Table timer anyone else is on, since no individual owns it.

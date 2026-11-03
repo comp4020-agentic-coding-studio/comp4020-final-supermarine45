@@ -22,12 +22,6 @@ const guestSessions = new Map<string, GuestRecord>();
 // AUTOINCREMENT id (always >= 1) — isGuest(id) is just id < 0.
 let nextGuestId = -1;
 
-const GUEST_ADJECTIVES = [
-  "Sleepy", "Quiet", "Curious", "Swift", "Gentle", "Bold", "Quiet", "Clever",
-  "Calm", "Restless", "Patient", "Wandering", "Drowsy", "Steady", "Nimble",
-  "Stubborn", "Cheerful", "Watchful", "Humble", "Brisk",
-] as const;
-
 const GUEST_ANIMALS = [
   "Koala", "Otter", "Fox", "Owl", "Badger", "Heron", "Wombat", "Possum",
   "Magpie", "Quokka", "Platypus", "Kookaburra", "Dingo", "Echidna", "Ibis",
@@ -35,11 +29,11 @@ const GUEST_ANIMALS = [
   "Lynx", "Falcon", "Heron", "Tapir", "Marmot", "Pangolin", "Capybara", "Mole",
 ] as const;
 
+// No distinguishing suffix: nothing in the Table model requires same-table
+// display names to be unique (tickets are keyed by user id, not name).
 function randomGuestName(): string {
-  const adjective = GUEST_ADJECTIVES[Math.floor(Math.random() * GUEST_ADJECTIVES.length)];
   const animal = GUEST_ANIMALS[Math.floor(Math.random() * GUEST_ANIMALS.length)];
-  const suffix = Math.floor(Math.random() * 90 + 10); // 10-99, for same-room distinctness
-  return `${adjective} ${animal} ${suffix}`;
+  return `Guest ${animal}`;
 }
 
 // Creates a brand-new, never-before-seen guest identity and registers it in

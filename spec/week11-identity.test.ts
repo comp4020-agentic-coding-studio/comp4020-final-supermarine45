@@ -17,7 +17,9 @@ function untilRoster(socket: Socket): Promise<{ roster: RosterEntry[] }> {
   return new Promise((resolve) => socket.once("room:update", resolve));
 }
 
-// See spec/spark-and-extend.test.ts for the full rationale.
+// See spec/lobby-override-race.test.ts for the FIFO-lock rationale this
+// withTimeout helper has nothing to do with — kept here only because several
+// of this file's waits are on events a broken server could simply never send.
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms waiting for ${label}`)), ms);
@@ -34,9 +36,9 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
-// A slug not used by any other spec file (same reasoning as
-// voting-resolution.test.ts and shadow-view.test.ts).
+// A slug not used by any other spec file.
 const slug = "hancock-l3";
+const mode = "silent";
 
 // Zero-Friction Identity: a Shadow (no cookie, no account) types a name
 // instead of registering, and that name survives a full reconnect — proving
@@ -48,8 +50,9 @@ it(
     const shadow = connect();
     try {
       await once(shadow, "connect");
-      shadow.emit("room:join", { slug });
-      await Promise.all([once(shadow, "room:update"), once(shadow, "chat:history")]);
+      shadow.emit("room:join", { slug, mode });
+      await once(shadow, "room:joined");
+      await once(shadow, "room:update");
 
       const pseudonym = `pilot-${Math.random().toString(36).slice(2, 8)}`;
       // Both listeners are attached before the emit — the server's
@@ -85,7 +88,8 @@ it(
       const reconnected = connect(cookie);
       try {
         await once(reconnected, "connect");
-        reconnected.emit("room:join", { slug });
+        reconnected.emit("room:join", { slug, mode });
+        await once(reconnected, "room:joined");
         const rejoined = await withTimeout(
           untilRoster(reconnected),
           5000,
@@ -112,13 +116,14 @@ it(
     const shadow = connect();
     try {
       await once(shadow, "connect");
-      shadow.emit("room:join", { slug: "hancock-l3" });
-      await Promise.all([once(shadow, "room:update"), once(shadow, "chat:history")]);
+      shadow.emit("room:join", { slug, mode });
+      await once(shadow, "room:joined");
+      await once(shadow, "room:update");
 
-      const rejection = once<{ error: string; action: string }>(shadow, "room:unauthorized");
-      shadow.emit("room:start-focus", { minutes: 25 });
-      const payload = await withTimeout(rejection, 5000, "room:unauthorized");
-      expect(payload).toEqual({ error: "unauthorized", action: "room:start-focus" });
+      const rejection = once<{ error: string; action: string }>(shadow, "room:error");
+      shadow.emit("room:submit-ticket", { body: "A shadow's ticket" });
+      const payload = await withTimeout(rejection, 5000, "room:error");
+      expect(payload).toEqual({ error: "unauthorized", action: "room:submit-ticket" });
     } finally {
       shadow.close();
     }

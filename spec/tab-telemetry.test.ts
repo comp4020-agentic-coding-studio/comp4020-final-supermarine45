@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { io, type Socket } from "socket.io-client";
 import { expect, inject, it } from "vitest";
-import { TAB_HIDDEN_PENALTY_MS } from "../src/rooms.js";
+import { TAB_HIDDEN_PENALTY_MS, TABLE_CYCLE_MS } from "../src/rooms.js";
 
 const baseUrl = inject("baseUrl");
 
@@ -56,7 +56,9 @@ function untilStatus(socket: Socket, status: string): Promise<{ timer: { status:
   });
 }
 
-// See spec/spark-and-extend.test.ts for the full rationale.
+// See spec/lobby-override-race.test.ts for the same reasoning: an unbounded
+// wait would hang this test's own cleanup forever if the server never sent
+// the event being waited for at all.
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms waiting for ${label}`)), ms);
@@ -72,6 +74,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
     );
   });
 }
+
+const mode = "silent";
 
 // Live Accountability: switching away briefly flips the roster dot to amber
 // for everyone watching, but returning before the 60s deadline clears it
@@ -90,20 +94,23 @@ it(
     try {
       await Promise.all([once(resident, "connect"), once(watcher, "connect")]);
 
-      resident.emit("room:join", { slug });
+      resident.emit("room:join", { slug, mode });
+      await once(resident, "room:joined");
       await once(resident, "room:update");
-      watcher.emit("room:join", { slug });
+      watcher.emit("room:join", { slug, mode });
+      await once(watcher, "room:joined");
       await once(watcher, "room:update");
 
-      // Both listeners attached before the emit — broadcastRoom reaches
-      // resident and watcher in the same tick, so registering watcher's
-      // listener only after awaiting resident's own promise risks missing it
-      // (see shadow-view.test.ts for the same reasoning).
+      // No manual start exists anymore (Decision 2) — board a ticket and wait
+      // out the real scheduler's cycle mark, same pattern as every other
+      // rewritten file. Both listeners attached before the emit, same
+      // reasoning as shadow-view.test.ts: broadcastRoom reaches resident and
+      // watcher in the same tick.
       const residentFocus = untilStatus(resident, "focus");
       const watcherFocus = untilStatus(watcher, "focus");
-      resident.emit("room:start-focus", { minutes: 25 });
-      await withTimeout(residentFocus, 10000, "resident to see focus status");
-      await withTimeout(watcherFocus, 10000, "watcher to see focus update");
+      resident.emit("room:submit-ticket", { body: "Read two chapters" });
+      await withTimeout(residentFocus, TABLE_CYCLE_MS + 10000, "resident to see focus status");
+      await withTimeout(watcherFocus, TABLE_CYCLE_MS + 10000, "watcher to see focus update");
 
       const sawAmber = untilRosterEntry(watcher, residentName, (e) => e.tabHidden === true);
       resident.emit("tab_hidden");
@@ -113,20 +120,20 @@ it(
       resident.emit("tab_visible");
       await withTimeout(sawGreenAgain, 5000, "watcher to see the resident's dot clear");
     } finally {
-      const watcherSawIdle = untilStatus(watcher, "idle");
-      resident.emit("room:reset");
-      await withTimeout(watcherSawIdle, 5000, "room to confirm reset").catch(() => {});
+      // No manual reset exists anymore (Decision 2) — the table's ticket for
+      // this cycle simply stays until the next hourly cycle mark. Just close
+      // every socket; there is nothing left to tear down server-side.
       resident.close();
       watcher.close();
     }
   },
-  20000,
+  TABLE_CYCLE_MS + 20000,
 );
 
 // Server-Side Penalty: a tab left hidden for the full window is demoted by
 // the server alone, with no client action required to "confirm" the
-// penalty — the room narrates it, the roster drops them, and the socket
-// loses write access from that point on, even though it never disconnected.
+// penalty — the roster drops them and the socket loses write access from
+// that point on, even though it never disconnected.
 it(
   "demotes a user back to Shadow after the full 60s window with no tab_visible",
   async () => {
@@ -140,23 +147,23 @@ it(
     try {
       await Promise.all([once(resident, "connect"), once(watcher, "connect")]);
 
-      resident.emit("room:join", { slug });
+      resident.emit("room:join", { slug, mode });
+      await once(resident, "room:joined");
       await once(resident, "room:update");
-      watcher.emit("room:join", { slug });
+      watcher.emit("room:join", { slug, mode });
+      await once(watcher, "room:joined");
       await once(watcher, "room:update");
 
-      // watcher (not resident) starts the block, so watcher stays
-      // room:reset-eligible (resetRoom only honours the original starter)
-      // even after resident is demoted and loses write access below — the
-      // cleanup in `finally` must be able to end the room regardless of what
-      // the test is proving about resident.
       const residentFocus = untilStatus(resident, "focus");
       const watcherFocus = untilStatus(watcher, "focus");
-      watcher.emit("room:start-focus", { minutes: 25 });
-      await withTimeout(residentFocus, 10000, "resident to see focus status");
-      await withTimeout(watcherFocus, 10000, "watcher to see focus update");
+      resident.emit("room:submit-ticket", { body: "Finish problem set" });
+      await withTimeout(residentFocus, TABLE_CYCLE_MS + 10000, "resident to see focus status");
+      await withTimeout(watcherFocus, TABLE_CYCLE_MS + 10000, "watcher to see focus update");
 
-      const notice = once<string>(watcher, "room:notice");
+      // The live warning fires immediately — proving the eventual demotion
+      // below is a harsher escalation of this same signal, not an unrelated
+      // mechanism.
+      const sawAmber = untilRosterEntry(watcher, residentName, (e) => e.tabHidden === true);
       const residentGone = new Promise<void>((resolve) => {
         const handler = (payload: { roster: { username: string }[] }): void => {
           if (!payload.roster.some((r) => r.username === residentName)) {
@@ -168,25 +175,21 @@ it(
       });
 
       resident.emit("tab_hidden");
+      await withTimeout(sawAmber, 5000, "watcher to see the resident's dot go amber");
       // No tab_visible — really wait out the server's own timer rather than
       // faking it, matching this suite's no-fake-timers convention.
-      const noticeText = await withTimeout(notice, TAB_HIDDEN_PENALTY_MS + 10000, "room:notice after the 60s window");
-      expect(noticeText).toContain(residentName);
-      await withTimeout(residentGone, 10000, "roster to drop the demoted user");
+      await withTimeout(residentGone, TAB_HIDDEN_PENALTY_MS + 10000, "roster to drop the demoted user");
 
       // The demoted socket never disconnected, but it's lost write access —
       // proving this is a real server-side demotion, not cosmetic.
-      const rejection = once<{ error: string; action: string }>(resident, "room:unauthorized");
-      resident.emit("room:start-focus", { minutes: 25 });
-      const payload = await withTimeout(rejection, 5000, "room:unauthorized after demotion");
-      expect(payload.error).toBe("unauthorized");
+      const rejection = once<{ error: string; action: string }>(resident, "room:error");
+      resident.emit("room:submit-ticket", { body: "Attempting after demotion" });
+      const payload = await withTimeout(rejection, 5000, "room:error after demotion");
+      expect(payload).toEqual({ error: "unauthorized", action: "room:submit-ticket" });
     } finally {
-      const watcherSawIdle = untilStatus(watcher, "idle");
-      watcher.emit("room:reset");
-      await withTimeout(watcherSawIdle, 5000, "room to confirm reset").catch(() => {});
       resident.close();
       watcher.close();
     }
   },
-  TAB_HIDDEN_PENALTY_MS + 30000,
+  TABLE_CYCLE_MS + TAB_HIDDEN_PENALTY_MS + 30000,
 );
