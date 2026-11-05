@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { getConfig, getLocationHistory, getLocations, type LocationSummary } from "../api";
 import { useLobbySocket } from "../hooks/useTableSocket";
+import { useNow } from "../hooks/useNow";
 import { ModePicker } from "../components/ModePicker";
 import { OutcomeBadge } from "../components/OutcomeBadge";
 import { Avatar } from "../components/Avatar";
@@ -14,6 +15,7 @@ export function RoomPage() {
   const [locations, setLocations] = useState<LocationSummary[]>([]);
   const [history, setHistory] = useState<LocationHistoryEntry[]>([]);
   const lobby = useLobbySocket();
+  const now = useNow();
 
   useEffect(() => {
     getConfig().then((c) => setModeInfo(c.activityModes));
@@ -56,7 +58,7 @@ export function RoomPage() {
       </p>
 
       <div className="mt-6">
-        <ModePicker slug={slug} modeInfo={modeInfo} summaries={live?.modes} />
+        <ModePicker slug={slug} modeInfo={modeInfo} summaries={live?.modes} now={now} />
       </div>
 
       <section className="mt-10">

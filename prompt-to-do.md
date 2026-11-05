@@ -72,3 +72,5 @@ Add ways to give encouragements between users.
 Depending on user permission, will it possible to lock the user’s window (ex? To have the user very focused.
 
 - When a new user is created, it should check against the database to ensure the username or email address does not already exist.
+
++ Add option to arrange different timer block, i.e., if the user would like to finish early. But the global timer should stay at 50 minute (to decrease onboaring threshold)

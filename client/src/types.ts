@@ -33,7 +33,6 @@ export interface Ticket {
   stuck: boolean;
   stuckAt: number | null;
   stamp: TicketStamp | null;
-  vote: "yes" | "no" | null;
   stayedFullBlock: boolean;
   createdAt: number;
 }
@@ -80,7 +79,6 @@ export interface RoomUpdatePayload {
   whiteboardOpenedAt: number | null;
   whiteboardText: string;
   whiteboardHighlights: WhiteboardHighlight[];
-  voteOpenedAt: number | null;
   capacity: number;
   upcoming: ScheduledSession[];
 }
@@ -122,6 +120,9 @@ export interface LobbyModeSummary {
   status: RoomStatus;
   occupants: number;
   ticketCount: number;
+  timer: TimerPayload;
+  roster: RosterEntry[];
+  shadowCount: number;
 }
 
 export interface LobbyLocation {

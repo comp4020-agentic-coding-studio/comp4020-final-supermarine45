@@ -4,7 +4,6 @@ import type { ActivityMode, Identity, Location, RoomState, RoomStatus, Ticket } 
 import {
   ACTIVITY_MODES,
   addKudos,
-  castVote,
   countBoardedTickets,
   countUpcomingSessions,
   deleteUserBuddies,
@@ -18,6 +17,7 @@ import {
   getKudosForTicket,
   getLocationBySlug,
   getOrCreateTable,
+  getPreviousTicket,
   getTable,
   getTicket,
   incrementStreak,
@@ -218,16 +218,9 @@ interface WhiteboardState {
   openedAt: number | null;
 }
 const whiteboards = new Map<string, WhiteboardState>();
-// tableKey -> the fallback timer that auto-opens the Whiteboard if the Leader
-// never clicks Launch, so a disengaged Leader can't block the table.
+// tableKey -> the fallback timer that auto-opens the Whiteboard if nobody
+// clicks Launch, so a disengaged table can't block itself.
 const whiteboardFallbackTimers = new Map<string, NodeJS.Timeout>();
-// tableKey -> when the Rollover Vote opened this break (null/absent until
-// opened, by the Leader or by the fallback timer). Cleared at the start of
-// every new focus cycle, same lifetime as the whiteboard.
-const voteOpenedAt = new Map<string, number>();
-// tableKey -> the fallback timer that auto-opens voting near the end of
-// break if the Leader never clicks Initiate.
-const voteFallbackTimers = new Map<string, NodeJS.Timeout>();
 
 function shadowCount(locationId: number, mode: ActivityMode): number {
   return shadowCounts.get(tableKey(locationId, mode))?.size ?? 0;
@@ -317,6 +310,12 @@ function broadcastLobby(io: Server, db: DatabaseSync): void {
         status: state.status,
         occupants: occupancy(location.id, mode),
         ticketCount: countBoardedTickets(db, location.id, mode, cycleStartAtFor(state)),
+        // Lets RoomPage's ModePicker show a live per-mode countdown ring and
+        // named roster before anyone joins that table — without this, the
+        // only live-updating signal on that page was the `status` word.
+        timer: timerPayload(db, location.id, mode),
+        roster: roster(location.id, mode).slice(0, TABLE_CAPACITY),
+        shadowCount: shadowCount(location.id, mode),
       };
     });
     return {
@@ -361,7 +360,6 @@ export function broadcastRoom(io: Server, db: DatabaseSync, locationId: number, 
     whiteboardOpenedAt: whiteboard?.openedAt ?? null,
     whiteboardText: whiteboard?.text ?? "",
     whiteboardHighlights: whiteboard?.highlights ?? [],
-    voteOpenedAt: voteOpenedAt.get(key) ?? null,
     capacity: TABLE_CAPACITY,
     upcoming: listUpcomingSessions(db, locationId),
   });
@@ -381,15 +379,12 @@ function clearTableTimer(key: string): void {
   const subphase = subphaseTimers.get(key);
   if (subphase) clearTimeout(subphase);
   subphaseTimers.delete(key);
-  // Easy to miss: without clearing these too, a rapid idle<->focus<->break
+  // Easy to miss: without clearing this too, a rapid idle<->focus<->break
   // transition (e.g. in tests) would leak a stale fallback timer or let it
   // double-fire against the table's next cycle.
   const whiteboardFallback = whiteboardFallbackTimers.get(key);
   if (whiteboardFallback) clearTimeout(whiteboardFallback);
   whiteboardFallbackTimers.delete(key);
-  const voteFallback = voteFallbackTimers.get(key);
-  if (voteFallback) clearTimeout(voteFallback);
-  voteFallbackTimers.delete(key);
 }
 
 // Arms the next transition for one (location, mode) table, however far in
@@ -415,8 +410,6 @@ function armNextTransition(io: Server, db: DatabaseSync, locationId: number, mod
     if (state.status === "focus") {
       armSubphaseTimer(io, db, locationId, mode, state);
       armWhiteboardFallbackTimer(io, db, locationId, mode, state);
-    } else {
-      armVoteFallbackTimer(io, db, locationId, mode, state);
     }
     return;
   }
@@ -452,10 +445,9 @@ function armSubphaseTimer(io: Server, db: DatabaseSync, locationId: number, mode
   );
 }
 
-// A disengaged/AFK Leader must not be able to silently deny the whole table
-// a Whiteboard: 60s after the Collab transition, auto-open it if the Leader
-// still hasn't clicked Launch. Problem-Solving only — the only mode with a
-// Whiteboard at all.
+// Nobody should be able to silently deny the whole table a Whiteboard just by
+// not clicking Launch: 60s after the Collab transition, auto-open it if no
+// one has. Problem-Solving only — the only mode with a Whiteboard at all.
 function armWhiteboardFallbackTimer(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, state: RoomState): void {
   if (mode !== "problem") return;
   const split = splitMsFor(mode);
@@ -469,28 +461,7 @@ function armWhiteboardFallbackTimer(io: Server, db: DatabaseSync, locationId: nu
     setTimeout(() => {
       if (whiteboards.get(key)?.openedAt != null) return;
       whiteboards.set(key, { text: "", highlights: [], openedAt: Date.now() });
-      logSystemAction(db, locationId, "System", `Whiteboard auto-opened for ${mode} (Leader fallback).`);
-      broadcastRoom(io, db, locationId, mode);
-    }, delay),
-  );
-}
-
-// Same fallback philosophy for the Rollover Vote: if the Leader never clicks
-// Initiate, auto-open voting near the end of break so the table still gets a
-// chance to vote before the cycle resolves. Scaled proportionally off
-// BREAK_DURATION_MS (like splitMsFor scales off FOCUS_DURATION_MS) so this
-// still fires at a sane point under a shortened test-speed cycle.
-function armVoteFallbackTimer(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, state: RoomState): void {
-  const key = tableKey(locationId, mode);
-  const fallbackAt = state.phaseEndAt! - BREAK_DURATION_MS * (2 / 10);
-  const delay = fallbackAt - Date.now();
-  if (delay <= 0) return;
-  voteFallbackTimers.set(
-    key,
-    setTimeout(() => {
-      if (voteOpenedAt.has(key)) return;
-      voteOpenedAt.set(key, Date.now());
-      logSystemAction(db, locationId, "System", `Rollover Vote auto-opened for ${mode} (Leader fallback).`);
+      logSystemAction(db, locationId, "System", `Whiteboard auto-opened for ${mode} (fallback).`);
       broadcastRoom(io, db, locationId, mode);
     }, delay),
   );
@@ -524,9 +495,6 @@ function beginScheduledFocus(
 // cycleStartAt all the way through break — see cycleStartAtFor.
 function endFocus(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode): void {
   const state = getTable(db, locationId, mode);
-  // Fresh vote window per break — any stale "opened" flag from a previous
-  // cycle (shouldn't exist, but keeps this self-healing) must not linger.
-  voteOpenedAt.delete(tableKey(locationId, mode));
   setTableState(db, locationId, mode, "break", state.phaseStartedAt, Date.now() + BREAK_DURATION_MS, BREAK_DURATION_MS);
   logSystemAction(db, locationId, "System", `Focus ended for ${mode}; break started.`);
   broadcastRoom(io, db, locationId, mode);
@@ -534,31 +502,8 @@ function endFocus(io: Server, db: DatabaseSync, locationId: number, mode: Activi
   armNextTransition(io, db, locationId, mode);
 }
 
-// Resolves the Rollover Vote and updates each boarded user's streak, before
-// the table state is wiped back to idle (and the cycle's tickets become
-// unaddressable for next cycle's query, since cycle_start_at will change).
-// Quorum: at least half of the cycle's boarded tickets must have cast a vote
-// at all, and among those cast, yes must outnumber no. Anyone who didn't
-// vote is treated as not continuing (same as an explicit "no") — this scales
-// with table size rather than using a flat vote-count threshold, so a
-// 6-person table can't be swung by one straggler's vote.
-function resolveVotesAndStreaks(db: DatabaseSync, locationId: number, mode: ActivityMode, cycleStartAt: number): void {
-  const tickets = listTickets(db, locationId, mode, cycleStartAt);
-  if (tickets.length === 0) return;
-  const yes = tickets.filter((t) => t.vote === "yes").length;
-  const no = tickets.filter((t) => t.vote === "no").length;
-  const quorumMet = yes + no >= Math.ceil(tickets.length / 2);
-  const passed = quorumMet && yes > no;
-  for (const ticket of tickets) {
-    if (isGuest(ticket.userId)) continue;
-    if (passed && ticket.vote === "yes") incrementStreak(db, ticket.userId, locationId, mode);
-    else resetStreak(db, ticket.userId, locationId, mode);
-  }
-}
-
 function endBreak(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode): void {
   const state = getTable(db, locationId, mode);
-  resolveVotesAndStreaks(db, locationId, mode, state.phaseStartedAt!);
   setTableState(db, locationId, mode, "idle", null, null, null);
   logSystemAction(db, locationId, "System", `Break ended for ${mode}; table idle.`);
   broadcastRoom(io, db, locationId, mode);
@@ -806,6 +751,18 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
         socket.emit("room:error", { error: "table_full", action: "room:submit-ticket" });
         return;
       }
+      // Reboard streak (no group vote involved, see db.ts's StreakEntry
+      // comment): only a brand-new board for this cycle (not an edit to an
+      // already-boarded ticket) counts as "coming back," and it's judged
+      // purely against this one user's own most recent prior ticket at this
+      // table — did they complete it, or not.
+      if (!existing && !isGuest(user.id)) {
+        const previous = getPreviousTicket(db, locationId, mode, user.id, cycleStartAt);
+        if (previous) {
+          if (previous.stamp === "completed") incrementStreak(db, user.id, locationId, mode);
+          else resetStreak(db, user.id, locationId, mode);
+        }
+      }
       upsertTicket(db, locationId, mode, user.id, user.username, cycleStartAt, (body as string).trim());
       logRoomAction(db, locationId, identityLabel(user, socket.id), `Submitted ticket for ${mode}: "${(body as string).trim()}"`);
       broadcastRoom(io, db, locationId, mode);
@@ -895,12 +852,6 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
         socket.emit("room:error", { error: "wrong_mode", action: "room:launch-whiteboard" });
         return;
       }
-      const state = getTable(db, locationId, mode);
-      const tickets = listTickets(db, locationId, mode, cycleStartAtFor(state));
-      if (user.id !== leaderUserId(tickets)) {
-        socket.emit("room:error", { error: "not_leader", action: "room:launch-whiteboard" });
-        return;
-      }
       whiteboards.set(tableKey(locationId, mode), { text: "", highlights: [], openedAt: Date.now() });
       logRoomAction(db, locationId, identityLabel(user, socket.id), "Launched the Whiteboard.");
       broadcastRoom(io, db, locationId, mode);
@@ -987,52 +938,12 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       socket.to(roomName(locationId, mode)).emit("whiteboard:cursor", { userId: user.id, x, y });
     });
 
-    socket.on("room:cast-vote", ({ vote }: { vote?: "yes" | "no" }) => {
+    socket.on("room:leave", () => {
       if (!joined) return;
-      const user = currentIdentity();
-      if (!user || isShadow || isDemoted()) {
-        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:cast-vote. Rejected.");
-        socket.emit("room:error", { error: "unauthorized", action: "room:cast-vote" });
-        return;
-      }
-      const { locationId, mode } = joined;
-      const state = getTable(db, locationId, mode);
-      if (state.status !== "break" || (vote !== "yes" && vote !== "no")) {
-        socket.emit("room:error", { error: "not_breaking", action: "room:cast-vote" });
-        return;
-      }
-      const ticket = getTicket(db, locationId, mode, user.id, state.phaseStartedAt!);
-      if (!ticket) {
-        socket.emit("room:error", { error: "not_found", action: "room:cast-vote" });
-        return;
-      }
-      castVote(db, locationId, mode, user.id, state.phaseStartedAt!, vote);
-      logRoomAction(db, locationId, identityLabel(user, socket.id), `Cast Rollover Vote: ${vote}.`);
-      broadcastRoom(io, db, locationId, mode);
-    });
-
-    socket.on("room:initiate-vote", () => {
-      if (!joined) return;
-      const user = currentIdentity();
-      if (!user || isShadow || isDemoted()) {
-        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:initiate-vote. Rejected.");
-        socket.emit("room:error", { error: "unauthorized", action: "room:initiate-vote" });
-        return;
-      }
-      const { locationId, mode } = joined;
-      const state = getTable(db, locationId, mode);
-      if (state.status !== "break") {
-        socket.emit("room:error", { error: "not_breaking", action: "room:initiate-vote" });
-        return;
-      }
-      const tickets = listTickets(db, locationId, mode, cycleStartAtFor(state));
-      if (user.id !== leaderUserId(tickets)) {
-        socket.emit("room:error", { error: "not_leader", action: "room:initiate-vote" });
-        return;
-      }
-      voteOpenedAt.set(tableKey(locationId, mode), Date.now());
-      logRoomAction(db, locationId, identityLabel(user, socket.id), "Initiated the Rollover Vote.");
-      broadcastRoom(io, db, locationId, mode);
+      leaveTable(socket, io, db, joined, isShadow);
+      socket.leave(roomName(joined.locationId, joined.mode));
+      joined = null;
+      isShadow = false;
     });
 
     socket.on("disconnect", () => {

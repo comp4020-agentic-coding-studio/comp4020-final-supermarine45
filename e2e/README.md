@@ -84,12 +84,12 @@ trying to re-prove those. Instead it covers:
   the full Buddy request → accept → feed loop (`account.cjs`) — none of this
   (the single largest net-new feature in the redesign) has any `spec/`
   coverage at all.
-- The **guided pod loop composed end to end** (`leader-vote.cjs`): two users
-  converge on the same Leader, a non-leader's vote-initiate is rejected while
-  the Leader's own opens voting for the table, and a unanimous passing vote
-  increments a real persisted streak for both — `spec/leader-crowning.test.ts`
-  and `spec/rollover-vote.test.ts` already cover each mechanic (leader
-  determinism, quorum math, contested-vote resets) in isolation; this proves
+- The **guided pod loop composed end to end** (`reboard-streak.cjs`): two
+  users converge on the same (purely cosmetic, non-gating) Leader, then each
+  completes a cycle, reboards, and sees their own persisted streak increment
+  — no vote, no quorum, no leader action involved — `spec/leader-crowning.test.ts`
+  and `spec/reboard-streak.test.ts` already cover each mechanic (leader
+  determinism, individual streak increment/reset) in isolation; this proves
   they compose across one real table's whole cycle.
 - The **redesigned landing page** (buildings overview, click-through to a
   building's rooms), in a real browser via Playwright (`landing-page.cjs`) —
@@ -117,7 +117,7 @@ run concurrently instead of sequentially:
 |---|---|
 | `chifley-ground` | `core-loop.cjs` (writing/silent), `auto-join.cjs` (problem) |
 | `hancock-ground` | `capacity.cjs` |
-| `law` | `stuck-flag.cjs` (problem/silent/pitch), `leader-vote.cjs` (writing) |
+| `law` | `stuck-flag.cjs` (problem/silent/pitch), `reboard-streak.cjs` (writing) |
 | `menzies` | `landing-page.cjs` (also fully owns the `menzies-library` building slug) |
 | `chifley` | `shadow.cjs` |
 | `hancock` | `account.cjs` |
@@ -125,7 +125,7 @@ run concurrently instead of sequentially:
 `auth.cjs` never joins a table at all, so it doesn't need a slug. `law` and
 `chifley-ground` are the two slugs shared across two files each — safe only
 because each pair claims disjoint modes (`stuck-flag.cjs`'s problem/silent/pitch
-vs. `leader-vote.cjs`'s writing; `core-loop.cjs`'s writing/silent vs.
+vs. `reboard-streak.cjs`'s writing; `core-loop.cjs`'s writing/silent vs.
 `auto-join.cjs`'s problem), and tables are keyed by `(location, mode)` jointly.
 
 Each `e2e/run.cjs` invocation gets its own throwaway server/database anyway

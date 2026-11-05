@@ -164,17 +164,18 @@ it("rejects room:launch-whiteboard outside Problem-Solving mode with wrong_mode"
   }
 });
 
-// The whole Whiteboard story inside one Collab window: the gate rejects a
-// non-leader and accepts the Leader, paste/highlight sync live to the other
-// viewer, and a live cursor reaches the other socket but never the sender and
-// never rides room:update. Collab is only a few seconds wide at CI's
-// test-speed cycle (splitMinutes 40 of 50 means an 80%-elapsed split, with
-// focus ending at 100%), so every step fires the moment its predecessor's
-// broadcast confirms, with no incidental sleeps except the one deliberately
-// placed last (proving the sender never gets its own cursor back) — nothing
-// after that point still needs Collab to be open.
+// The whole Whiteboard story inside one Collab window: launch is open to any
+// boarded participant (no leader-gating — leader-only functions only ever
+// applied to the break phase, and launch fires during focus/collab), and
+// paste/highlight sync live to the other viewer, and a live cursor reaches
+// the other socket but never the sender and never rides room:update. Collab
+// is only a few seconds wide at CI's test-speed cycle (splitMinutes 40 of 50
+// means an 80%-elapsed split, with focus ending at 100%), so every step fires
+// the moment its predecessor's broadcast confirms, with no incidental sleeps
+// except the one deliberately placed last (proving the sender never gets its
+// own cursor back) — nothing after that point still needs Collab to be open.
 it(
-  "gates launch-whiteboard to the Leader, then live-syncs paste/highlight and relays cursor to others but never the sender",
+  "lets any boarded participant launch the whiteboard (no leader-gating), then live-syncs paste/highlight and relays cursor to others but never the sender",
   async () => {
     const slug = "hedley-common";
     const mode = "problem";
@@ -208,15 +209,10 @@ it(
       const bSeesBoth = untilTicketCount(b, 2);
       a.emit("room:submit-ticket", { body: "Debug the failing test" });
       b.emit("room:submit-ticket", { body: "Debug the slow query" });
-      const [aBoth] = await Promise.all([
+      await Promise.all([
         withTimeout(aSeesBoth, 10000, "a to see both boarded tickets"),
         withTimeout(bSeesBoth, 10000, "b to see both boarded tickets"),
       ]);
-      const leaderUserId = aBoth.leaderUserId!;
-      expect([aId, bId]).toContain(leaderUserId);
-      const nonLeaderId = leaderUserId === aId ? bId : aId;
-      const leaderSocket = leaderUserId === aId ? a : b;
-      const nonLeaderSocket = leaderUserId === aId ? b : a;
 
       const aFocus = untilStatus(a, "focus");
       const bFocus = untilStatus(b, "focus");
@@ -228,29 +224,24 @@ it(
       await withTimeout(aCollab, TABLE_CYCLE_MS + 10000, "a to see collab subphase");
       await withTimeout(bCollab, TABLE_CYCLE_MS + 10000, "b to see collab update");
 
-      // Fired concurrently (no await between) to spend as little of the
-      // narrow Collab window as possible — the non-leader's rejection and the
-      // Leader's success don't depend on each other's ordering.
-      const rejection = once<RoomError>(nonLeaderSocket, "room:error");
+      // b launches it, not a — proving launch is open to any boarded
+      // participant, not gated to whichever ticket boarded first.
       const opened = Promise.all([untilWhiteboardOpened(a), untilWhiteboardOpened(b)]);
-      nonLeaderSocket.emit("room:launch-whiteboard");
-      leaderSocket.emit("room:launch-whiteboard");
+      b.emit("room:launch-whiteboard");
 
-      const rejectionPayload = await withTimeout(rejection, 5000, "room:error for a non-leader's launch-whiteboard");
-      expect(rejectionPayload).toEqual({ error: "not_leader", action: "room:launch-whiteboard" });
       const [openedA, openedB] = await withTimeout(opened, 5000, "both sockets to see whiteboardOpenedAt set");
       expect(openedA.whiteboardOpenedAt).not.toBeNull();
       expect(openedB.whiteboardOpenedAt).toBe(openedA.whiteboardOpenedAt);
 
       const bSeesPaste = untilWhiteboardText(b, "def solve():");
-      leaderSocket.emit("room:whiteboard-paste", { text: "def solve():" });
-      const pastePayload = await withTimeout(bSeesPaste, 5000, "b to see the leader's pasted text");
+      a.emit("room:whiteboard-paste", { text: "def solve():" });
+      const pastePayload = await withTimeout(bSeesPaste, 5000, "b to see a's pasted text");
       expect(pastePayload.whiteboardText).toBe("def solve():");
 
-      const leaderSeesHighlight = untilHighlightCount(leaderSocket, 1);
-      nonLeaderSocket.emit("room:whiteboard-highlight", { start: 0, end: 3 });
-      const highlightPayload = await withTimeout(leaderSeesHighlight, 5000, "the leader to see the non-leader's highlight");
-      expect(highlightPayload.whiteboardHighlights).toEqual([{ start: 0, end: 3, byUserId: nonLeaderId }]);
+      const aSeesHighlight = untilHighlightCount(a, 1);
+      b.emit("room:whiteboard-highlight", { start: 0, end: 3 });
+      const highlightPayload = await withTimeout(aSeesHighlight, 5000, "a to see b's highlight");
+      expect(highlightPayload.whiteboardHighlights).toEqual([{ start: 0, end: 3, byUserId: bId }]);
 
       const bGotCursor = once<CursorEvent>(b, "whiteboard:cursor");
       let aSawOwnCursor = false;

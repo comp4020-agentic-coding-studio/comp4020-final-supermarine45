@@ -13,33 +13,27 @@ const SSRL_PROMPT: Record<ActivityMode, string> = {
   problem: "If you got stuck, did the swarm actually unblock you? What's the very next step?",
 };
 
-type Card = "stamp" | "reflect" | "kudos" | "vote";
+type Card = "stamp" | "reflect" | "kudos";
 
 export function BreakModal({
   mode,
   myTicket,
   tickets,
   myUserId,
-  leaderUserId,
-  voteOpenedAt,
   onStamp,
   onSendKudos,
   onReboard,
-  onCastVote,
-  onInitiateVote,
+  onLeave,
   reboardedBody,
 }: {
   mode: ActivityMode;
   myTicket: Ticket | null;
   tickets: TicketWithKudos[];
   myUserId: number | undefined;
-  leaderUserId: number | null;
-  voteOpenedAt: number | null;
   onStamp: (stamp: "completed" | "partial") => void;
   onSendKudos: (toUserId: number, emoji: string) => void;
   onReboard: (body: string) => void;
-  onCastVote: (vote: "yes" | "no") => void;
-  onInitiateVote: () => void;
+  onLeave: () => void;
   // The server can't address the *next* cycle until the table actually goes
   // idle (see TablePage), so a reboard made here is queued, not submitted
   // yet — this renders that queued state instead of the form once set.
@@ -58,10 +52,6 @@ export function BreakModal({
   }, [card]);
 
   const others = tickets.filter((t) => t.userId !== myUserId);
-  const isLeader = myUserId !== undefined && myUserId === leaderUserId;
-  const yesCount = tickets.filter((t) => t.vote === "yes").length;
-  const noCount = tickets.filter((t) => t.vote === "no").length;
-  const leaderVote = tickets.find((t) => t.userId === leaderUserId)?.vote ?? null;
 
   return (
     <motion.div
@@ -77,20 +67,10 @@ export function BreakModal({
         className="w-full max-w-md rounded-xl bg-espresso p-6 text-cream shadow-2xl"
       >
         <div className="mb-4 flex justify-center gap-1.5">
-          {(["stamp", "reflect", "kudos", "vote"] as Card[]).map((c) => (
+          {(["stamp", "reflect", "kudos"] as Card[]).map((c) => (
             <span key={c} className={`h-1.5 w-8 rounded-full ${card === c ? "bg-terracotta" : "bg-white/15"}`} />
           ))}
         </div>
-
-        {isLeader && !voteOpenedAt && (
-          <button
-            type="button"
-            onClick={onInitiateVote}
-            className="mb-4 w-full rounded-md border border-terracotta/40 px-3 py-1.5 text-xs font-medium text-terracotta"
-          >
-            Open the vote for everyone
-          </button>
-        )}
 
         <AnimatePresence mode="wait">
           {card === "stamp" && (
@@ -137,7 +117,7 @@ export function BreakModal({
               transition={{ duration: 0.3 }}
             >
               <h2 className="font-mono text-lg">A moment to reflect</h2>
-              <p className="mt-2 text-xs uppercase tracking-wide text-cream/50">Your pod leader asks&hellip;</p>
+              <p className="mt-2 text-xs uppercase tracking-wide text-cream/50">The room asks&hellip;</p>
               <p className="mt-1 text-sm text-cream/80">{SSRL_PROMPT[mode]}</p>
               <div className="mt-4 h-1 overflow-hidden rounded-full bg-white/10">
                 <div
@@ -193,67 +173,17 @@ export function BreakModal({
                   <TicketForm initialValue="" onSubmit={onReboard} disabled={false} dark />
                 )}
               </div>
-              <button
-                type="button"
-                onClick={() => setCard("vote")}
-                className="mt-4 w-full rounded-md border border-white/20 px-4 py-2 text-sm font-medium"
-              >
-                Continue
-              </button>
-            </motion.div>
-          )}
-
-          {card === "vote" && (
-            <motion.div
-              key="vote"
-              initial={{ opacity: 0, x: 16 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -16 }}
-              transition={{ duration: 0.3 }}
-            >
-              <h2 className="font-mono text-lg">Keep the streak going?</h2>
-              {voteOpenedAt ? (
-                <>
-                  <p className="mt-1 text-sm text-cream/70">Vote to roll the whole table into the next cycle.</p>
-                  <div className="mt-4 flex gap-2">
-                    <button
-                      type="button"
-                      onClick={() => onCastVote("yes")}
-                      className={`flex-1 rounded-md px-4 py-2 text-sm font-medium ${
-                        myTicket?.vote === "yes" ? "bg-sage text-espresso" : "border border-sage/40 text-sage"
-                      }`}
-                    >
-                      Yes, continue
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onCastVote("no")}
-                      className={`flex-1 rounded-md px-4 py-2 text-sm font-medium ${
-                        myTicket?.vote === "no" ? "bg-white/20 text-cream" : "border border-white/20 text-cream/80"
-                      }`}
-                    >
-                      No, I'm done
-                    </button>
-                  </div>
-                  <div className="mt-4 flex items-center justify-between text-xs text-cream/60">
-                    <span>
-                      {yesCount} yes &middot; {noCount} no &middot; {tickets.length - yesCount - noCount} undecided
-                    </span>
-                    {leaderVote && (
-                      <span className="rounded bg-terracotta/20 px-2 py-0.5 font-medium text-terracotta">
-                        Leader voted {leaderVote}
-                      </span>
-                    )}
-                  </div>
-                </>
-              ) : (
-                <p className="mt-2 text-sm text-cream/60">
-                  Waiting for the pod leader to open the vote&hellip; it'll open automatically if they don't.
-                </p>
-              )}
             </motion.div>
           )}
         </AnimatePresence>
+
+        <button
+          type="button"
+          onClick={onLeave}
+          className="mt-5 w-full text-center text-xs text-cream/50 underline underline-offset-2 hover:text-cream/80"
+        >
+          Leave the room
+        </button>
       </motion.div>
     </motion.div>
   );

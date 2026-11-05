@@ -4,7 +4,7 @@ import { PerimeterRing } from "./PerimeterRing";
 import { KudosButton } from "./KudosButton";
 import { KUDOS_EMOJI, type ActivityMode, type RosterEntry, type TicketWithKudos, type TimerPayload } from "../types";
 
-function ringColor(timer: TimerPayload): string {
+export function ringColor(timer: TimerPayload): string {
   if (timer.status === "break") return "#e07a5f";
   if (timer.subphase === "collab") return "#10b981";
   if (timer.status === "focus") return "#d97706";
@@ -17,7 +17,6 @@ export function TableDashboard({
   timer,
   mode,
   myUserId,
-  leaderUserId,
   now,
   onToggleStuck,
   onSendKudos,
@@ -27,7 +26,6 @@ export function TableDashboard({
   timer: TimerPayload;
   mode: ActivityMode;
   myUserId: number | undefined;
-  leaderUserId: number | null;
   now: number;
   onToggleStuck: () => void;
   onSendKudos: (toUserId: number, emoji: string) => void;
@@ -66,9 +64,6 @@ export function TableDashboard({
                 <p className="truncate text-sm font-medium">
                   {ticket.username}
                   {isMe && <span className="ml-1 opacity-60">(you)</span>}
-                  {ticket.userId === leaderUserId && (
-                    <span className="ml-1.5 text-xs font-normal uppercase tracking-wide opacity-60">Leader</span>
-                  )}
                 </p>
                 {tabHidden && <p className="text-xs text-amber-500">away from tab</p>}
               </div>

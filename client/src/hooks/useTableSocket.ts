@@ -30,13 +30,12 @@ export interface TableSocketState {
   stampTicket: (stamp: "completed" | "partial") => void;
   sendKudos: (toUserId: number, emoji: string) => void;
   setPseudonym: (pseudonym: string) => void;
-  castVote: (vote: "yes" | "no") => void;
   launchWhiteboard: () => void;
-  initiateVote: () => void;
   whiteboardPaste: (text: string) => void;
   whiteboardHighlight: (start: number, end: number) => void;
   whiteboardCursor: (x: number, y: number) => void;
   reconnect: () => void;
+  leave: () => void;
 }
 
 let sharedSocket: Socket | null = null;
@@ -155,9 +154,7 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
     stampTicket: (stamp) => getSocket().emit("room:stamp-ticket", { stamp }),
     sendKudos: (toUserId, emoji) => getSocket().emit("room:send-kudos", { toUserId, emoji }),
     setPseudonym: (pseudonym: string) => getSocket().emit("set_pseudonym", { pseudonym }),
-    castVote: (vote) => getSocket().emit("room:cast-vote", { vote }),
     launchWhiteboard: () => getSocket().emit("room:launch-whiteboard"),
-    initiateVote: () => getSocket().emit("room:initiate-vote"),
     whiteboardPaste: (text: string) => getSocket().emit("room:whiteboard-paste", { text }),
     whiteboardHighlight: (start: number, end: number) => getSocket().emit("room:whiteboard-highlight", { start, end }),
     whiteboardCursor: (x: number, y: number) => getSocket().emit("room:whiteboard-cursor", { x, y }),
@@ -168,6 +165,7 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
       if (socket.connected) socket.emit("room:join", { slug, mode });
       else socket.connect();
     },
+    leave: () => getSocket().emit("room:leave"),
   };
 }
 

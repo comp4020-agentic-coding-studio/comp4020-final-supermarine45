@@ -84,8 +84,6 @@ export interface Ticket {
   // Stuck Queue can render in the order people actually raised their hand.
   stuckAt: number | null;
   stamp: TicketStamp | null;
-  // This cycle's Rollover Vote, if cast. Null until the user votes.
-  vote: "yes" | "no" | null;
   stayedFullBlock: boolean;
   createdAt: number;
 }
@@ -161,10 +159,12 @@ export interface LocationHistoryEntry {
   cycleStartAt: number;
 }
 
-// A per-(user, hub, mode) Rollover Vote streak — separate from VFH. VFH
-// certifies "I finished and checked out"; this certifies "the table voted to
-// keep going, and I was one of the yes votes," which is why it resets to 0
-// on a no-vote, a non-vote, or a failed table-wide vote, not just a no-show.
+// A per-(user, hub, mode) reboard streak — separate from VFH. VFH certifies
+// "I finished and checked out" for a single block; this certifies "I came
+// back and did it again," purely from this one user's own behavior, with no
+// group vote or quorum involved — it resets to 0 the moment they reboard
+// without a qualifying stamp on their immediately-prior ticket at this table,
+// or don't reboard at all.
 export interface StreakEntry {
   locationName: string;
   activityMode: ActivityMode;
@@ -441,11 +441,13 @@ function migrate(db: DatabaseSync): void {
       UNIQUE(requester_id, addressee_id)
     );
 
-    -- A per-(user, hub, mode) Rollover Vote streak. Separate from VFH entirely
-    -- — VFH certifies full-block presence+stamp, this certifies "the group
-    -- chose to keep going, together, and I was one of the yes votes." No FK
-    -- on user_id: guests can vote and affect a table's tally but never accrue
-    -- a streak row (same precedent as VFH's guest exclusion below).
+    -- A per-(user, hub, mode) reboard streak. Separate from VFH entirely —
+    -- VFH certifies full-block presence+stamp for one block, this certifies
+    -- "I personally came back and did it again," driven purely by this one
+    -- user's own reboard+stamp history, no group vote involved. No FK on
+    -- user_id: a guest identity never persists long enough to accrue one
+    -- (same precedent as VFH's guest exclusion below), and callers skip
+    -- guests before writing here.
     CREATE TABLE IF NOT EXISTS streaks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
@@ -473,7 +475,6 @@ function migrate(db: DatabaseSync): void {
   ensureColumn(db, "users", "email", "email TEXT NOT NULL DEFAULT ''");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (email)");
   ensureColumn(db, "tickets", "stuck_at", "stuck_at INTEGER");
-  ensureColumn(db, "tickets", "vote", "vote TEXT");
 }
 
 // Insert-or-ignore per (slug, mode), rather than bailing out once any row
@@ -653,7 +654,7 @@ export function randomEncouragement(db: DatabaseSync): string | undefined {
 
 const TICKET_COLUMNS =
   "id, location_id AS locationId, activity_mode AS activityMode, user_id AS userId, username, " +
-  "cycle_start_at AS cycleStartAt, body, stuck, stuck_at AS stuckAt, stamp, vote, " +
+  "cycle_start_at AS cycleStartAt, body, stuck, stuck_at AS stuckAt, stamp, " +
   "stayed_full_block AS stayedFullBlock, created_at AS createdAt";
 
 type TicketRow = Omit<Ticket, "stuck" | "stayedFullBlock"> & { stuck: number; stayedFullBlock: number };
@@ -730,6 +731,30 @@ export function countBoardedTickets(
   return count;
 }
 
+// This user's most recent ticket at this table strictly before the given
+// cycle — used to decide whether a reboard continues their streak (rooms.ts'
+// room:submit-ticket handler). Not scoped to "the immediately previous
+// cycle" by timestamp arithmetic, since cycle length can change (test speed
+// overrides) and a table can sit idle between cycles; "most recent prior
+// ticket at this table" is what "did you come back and finish last time"
+// actually means.
+export function getPreviousTicket(
+  db: DatabaseSync,
+  locationId: number,
+  mode: ActivityMode,
+  userId: number,
+  beforeCycleStartAt: number,
+): Ticket | undefined {
+  const row = db
+    .prepare(
+      `SELECT ${TICKET_COLUMNS} FROM tickets ` +
+        "WHERE location_id = ? AND activity_mode = ? AND user_id = ? AND cycle_start_at < ? " +
+        "ORDER BY cycle_start_at DESC LIMIT 1",
+    )
+    .get(locationId, mode, userId, beforeCycleStartAt) as unknown as TicketRow | undefined;
+  return row ? toTicket(row) : undefined;
+}
+
 export function toggleStuck(
   db: DatabaseSync,
   locationId: number,
@@ -755,19 +780,6 @@ export function stampTicket(
   db.prepare(
     "UPDATE tickets SET stamp = ? WHERE location_id = ? AND activity_mode = ? AND user_id = ? AND cycle_start_at = ?",
   ).run(stamp, locationId, mode, userId, cycleStartAt);
-}
-
-export function castVote(
-  db: DatabaseSync,
-  locationId: number,
-  mode: ActivityMode,
-  userId: number,
-  cycleStartAt: number,
-  vote: "yes" | "no",
-): void {
-  db.prepare(
-    "UPDATE tickets SET vote = ? WHERE location_id = ? AND activity_mode = ? AND user_id = ? AND cycle_start_at = ?",
-  ).run(vote, locationId, mode, userId, cycleStartAt);
 }
 
 // Called from the tab-penalty demotion path (rooms.ts) so a user demoted
@@ -809,7 +821,7 @@ export function getKudosForTicket(db: DatabaseSync, ticketId: number): Kudos[] {
     .all(ticketId) as unknown as Kudos[];
 }
 
-// --- streaks (Rollover Vote) ---
+// --- streaks (reboard) ---
 
 // Raw current_streak, 0 if no row exists yet — unlike listStreaksForUser
 // (which only surfaces streaks > 0 for profile display), this returns the

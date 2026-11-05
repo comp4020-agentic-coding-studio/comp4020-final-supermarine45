@@ -15,7 +15,6 @@ function cursorColor(userId: number): string {
 // single shared, continuously-overwritten scratch surface — not chat: no
 // sender/recipient, no history, cleared every new focus cycle.
 export function Whiteboard({
-  isLeader,
   myUserId,
   roster,
   whiteboardOpenedAt,
@@ -28,7 +27,6 @@ export function Whiteboard({
   onHighlight,
   onCursor,
 }: {
-  isLeader: boolean;
   myUserId: number | undefined;
   roster: RosterEntry[];
   whiteboardOpenedAt: number | null;
@@ -60,17 +58,13 @@ export function Whiteboard({
   if (!whiteboardOpenedAt) {
     return (
       <div className="rounded-lg border border-sage/30 bg-white/5 p-4 text-center text-white">
-        {isLeader ? (
-          <button
-            type="button"
-            onClick={onLaunch}
-            className="rounded-md bg-sage px-4 py-2 text-sm font-medium text-espresso"
-          >
-            Launch whiteboard
-          </button>
-        ) : (
-          <p className="text-sm opacity-70">Waiting for the pod leader to launch the whiteboard&hellip;</p>
-        )}
+        <button
+          type="button"
+          onClick={onLaunch}
+          className="rounded-md bg-sage px-4 py-2 text-sm font-medium text-espresso"
+        >
+          Launch whiteboard
+        </button>
       </div>
     );
   }

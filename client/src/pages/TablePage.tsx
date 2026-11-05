@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { useAuth } from "../context/useAuth";
 import { useTableSocket } from "../hooks/useTableSocket";
+import { useNow } from "../hooks/useNow";
 import { cancelSchedule, planSession } from "../api";
 import { PhaseBanner } from "../components/PhaseBanner";
 import { TicketForm } from "../components/TicketForm";
@@ -14,15 +15,6 @@ import { Whiteboard } from "../components/Whiteboard";
 import { ClockIcon } from "../components/icons";
 import { ticketBodyError } from "../validation";
 import type { ActivityMode, RoomStatus } from "../types";
-
-function useNow(intervalMs = 1000): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
 
 const ERROR_COPY: Record<string, string> = {
   not_found: "That location or mode doesn't exist.",
@@ -37,6 +29,7 @@ export function TablePage() {
   const mode = modeParam as ActivityMode | undefined;
   const { me } = useAuth();
   const now = useNow();
+  const navigate = useNavigate();
   const {
     joined,
     room,
@@ -48,13 +41,12 @@ export function TablePage() {
     stampTicket,
     sendKudos,
     setPseudonym,
-    castVote,
     launchWhiteboard,
-    initiateVote,
     whiteboardPaste,
     whiteboardHighlight,
     whiteboardCursor,
     reconnect,
+    leave,
   } = useTableSocket(slug, mode);
 
   const [pseudonymInput, setPseudonymInput] = useState("");
@@ -120,6 +112,11 @@ export function TablePage() {
   function handleStopAutoJoin(): void {
     setAutoJoin(false);
     setAutoJoinError(null);
+  }
+
+  function handleLeave(): void {
+    leave();
+    navigate(`/room/${slug}`);
   }
 
   const mine = (room?.upcoming ?? []).filter((s) => me && s.username === me.username);
@@ -235,7 +232,6 @@ export function TablePage() {
             timer={room?.timer ?? { status: "idle", phaseEndAt: null, durationMs: null, subphase: null }}
             mode={mode}
             myUserId={myUserId}
-            leaderUserId={room?.leaderUserId ?? null}
             now={now}
             onToggleStuck={toggleStuck}
             onSendKudos={sendKudos}
@@ -247,7 +243,6 @@ export function TablePage() {
 
           {room && mode === "problem" && room.timer.status === "focus" && room.timer.subphase === "collab" && (
             <Whiteboard
-              isLeader={myUserId !== undefined && myUserId === room.leaderUserId}
               myUserId={myUserId}
               roster={room.roster}
               whiteboardOpenedAt={room.whiteboardOpenedAt}
@@ -324,13 +319,10 @@ export function TablePage() {
               myTicket={myTicket}
               tickets={room.tickets}
               myUserId={myUserId}
-              leaderUserId={room.leaderUserId}
-              voteOpenedAt={room.voteOpenedAt}
               onStamp={stampTicket}
               onSendKudos={sendKudos}
               onReboard={setQueuedReboard}
-              onCastVote={castVote}
-              onInitiateVote={initiateVote}
+              onLeave={handleLeave}
               reboardedBody={queuedReboard}
             />
           </motion.div>
