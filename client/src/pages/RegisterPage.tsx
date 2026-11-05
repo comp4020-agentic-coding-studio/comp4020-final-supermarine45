@@ -27,7 +27,7 @@ export function RegisterPage() {
 
   return (
     <main className="mx-auto max-w-sm px-6 py-16">
-      <h1 className="font-mono text-2xl font-semibold text-charcoal">Register</h1>
+      <h1 className="font-mono text-2xl font-semibold text-ink">Register</h1>
       <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-3">
         <input
           value={username}
@@ -35,7 +35,7 @@ export function RegisterPage() {
           placeholder="username (3-24, letters/digits/_/-)"
           autoComplete="username"
           required
-          className="rounded-md border border-black/15 px-3 py-2 text-sm outline-none focus:border-charcoal"
+          className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-ink"
         />
         <input
           type="email"
@@ -44,7 +44,7 @@ export function RegisterPage() {
           placeholder="ANU email (you@anu.edu.au)"
           autoComplete="email"
           required
-          className="rounded-md border border-black/15 px-3 py-2 text-sm outline-none focus:border-charcoal"
+          className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-ink"
         />
         <input
           type="password"
@@ -53,16 +53,16 @@ export function RegisterPage() {
           placeholder="password (8+ chars)"
           autoComplete="new-password"
           required
-          className="rounded-md border border-black/15 px-3 py-2 text-sm outline-none focus:border-charcoal"
+          className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-ink"
         />
-        <button type="submit" className="rounded-md bg-charcoal px-4 py-2 text-sm font-medium text-paper">
+        <button type="submit" className="rounded-md bg-ink px-4 py-2 text-sm font-medium text-canvas">
           Create account
         </button>
       </form>
       {error && <p className="mt-2 text-sm text-amber-700">{error}</p>}
-      <p className="mt-4 text-sm text-slate">
+      <p className="mt-4 text-sm text-ink-muted">
         Already have one?{" "}
-        <Link to="/login" className="text-charcoal underline">
+        <Link to="/login" className="text-ink underline">
           Log in
         </Link>
       </p>

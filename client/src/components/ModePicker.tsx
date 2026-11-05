@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import type { ActivityModeInfo, LobbyModeSummary } from "../types";
+import { ModeIcon } from "./icons";
 
 const MODE_ACCENT: Record<string, string> = {
   silent: "border-l-amber-600",
@@ -41,10 +42,13 @@ export function ModePicker({
           <motion.div key={info.mode} variants={cardVariants} whileHover={{ y: -2 }} whileTap={{ scale: 0.98 }}>
             <Link
               to={`/room/${slug}/${info.mode}`}
-              className={`group block h-full rounded-lg border border-l-4 border-black/10 bg-white p-4 shadow-sm transition hover:shadow-md ${MODE_ACCENT[info.mode] ?? ""}`}
+              className={`group block h-full rounded-lg border border-l-4 border-line bg-surface p-4 shadow-sm transition hover:shadow-md ${MODE_ACCENT[info.mode] ?? ""}`}
             >
               <div className="flex items-start justify-between gap-2">
-                <h3 className="font-semibold text-charcoal">{info.label}</h3>
+                <h3 className="flex items-center gap-2 font-semibold text-ink">
+                  <ModeIcon mode={info.mode} className="text-base text-ink-muted" />
+                  {info.label}
+                </h3>
                 {summary && summary.status !== "idle" && (
                   <span
                     className={`rounded-full px-2 py-0.5 text-xs font-medium ${
@@ -55,8 +59,8 @@ export function ModePicker({
                   </span>
                 )}
               </div>
-              <p className="mt-1 text-sm text-slate">{info.description}</p>
-              <div className="mt-3 flex items-center gap-3 text-xs text-slate">
+              <p className="mt-1 text-sm text-ink-muted">{info.description}</p>
+              <div className="mt-3 flex items-center gap-3 text-xs text-ink-muted">
                 <span>{summary?.occupants ?? 0} here</span>
                 <span>&middot;</span>
                 <span>{summary?.ticketCount ?? 0}/6 tickets</span>

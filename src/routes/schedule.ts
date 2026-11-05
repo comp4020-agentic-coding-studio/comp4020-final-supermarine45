@@ -6,9 +6,11 @@ import {
   createScheduledSession,
   deleteScheduledSession,
   getLocationBySlug,
+  getLocationSessionHistory,
   listUpcomingSessions,
   listUpcomingSessionsForUser,
 } from "../db.js";
+import { parseLimit } from "../http.js";
 import { broadcastRoom } from "../rooms.js";
 
 // Mirrors the real ANU library's own ~2-week booking horizon — a deliberate
@@ -28,6 +30,20 @@ export function scheduleRouter(db: DatabaseSync, io: Server): Router {
       return;
     }
     res.json({ sessions: listUpcomingSessions(db, location.id) });
+  });
+
+  // Public, no-auth — same visibility call as the schedule read above, and
+  // strictly less exposure than what an unauthenticated Shadow viewer
+  // already sees live over the socket (current ticket bodies), since this
+  // only serves *past* tickets.
+  router.get("/api/locations/:slug/history", (req, res) => {
+    const location = getLocationBySlug(db, req.params.slug as string);
+    if (!location) {
+      res.status(404).json({ error: "unknown location" });
+      return;
+    }
+    const limit = parseLimit(req.query.limit, 20, 100);
+    res.json({ history: getLocationSessionHistory(db, location.id, limit) });
   });
 
   // The one place that answers "what have I actually booked", across every

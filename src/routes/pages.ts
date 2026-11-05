@@ -10,6 +10,7 @@ import {
   getCognitiveDiet,
   getHeatmap,
   getHubStats,
+  getUserSessionHistory,
   getVfhCount,
   isGuest,
   listBuddies,
@@ -18,6 +19,7 @@ import {
   requestBuddy,
 } from "../db.js";
 import { requireRealUser } from "../auth.js";
+import { parseLimit } from "../http.js";
 import { readRecentLog, type LogCategory } from "../logger.js";
 import { ACTIVITY_MODE_INFO } from "../rooms.js";
 
@@ -78,12 +80,17 @@ export function pagesRouter(db: DatabaseSync, readmePath: string): Router {
     res.json({ streaks: listStreaksForUser(db, req.user!.id) });
   });
 
+  router.get("/api/me/history", requireRealUser, (req, res) => {
+    const limit = parseLimit(req.query.limit, 20, 100);
+    res.json({ history: getUserSessionHistory(db, req.user!.id, limit) });
+  });
+
   router.get("/api/me/buddies", requireRealUser, (req, res) => {
     res.json({ buddies: listBuddies(db, req.user!.id) });
   });
 
   router.get("/api/me/buddy-feed", requireRealUser, (req, res) => {
-    const limit = Math.min(Number(req.query.limit) || 20, 100);
+    const limit = parseLimit(req.query.limit, 20, 100);
     res.json({ feed: getBuddyFeed(db, req.user!.id, limit) });
   });
 
@@ -130,7 +137,7 @@ export function pagesRouter(db: DatabaseSync, readmePath: string): Router {
       res.status(404).json({ error: "unknown log category" });
       return;
     }
-    const limit = Math.min(Number(req.query.limit) || 200, 1000);
+    const limit = parseLimit(req.query.limit, 200, 1000);
     res.json({ lines: readRecentLog(category, limit) });
   });
 

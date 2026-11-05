@@ -1,30 +1,34 @@
-# Process overview
+## Process: Final modifications made
+For the final weeks of the project, I realized that the product, though satisfy the functional requirement, still lacked cohesion and flow. As such, I focused the last few weeks on refining the flow of the actual product itself. I backtracked and redefined the app's purppose, its target users, and design the workflow on how a user can use this product. This includes the introduction of the four "ways of working", and features specifically tuned to suit this.
 
-## What I built
-This week’s crit is focused on implementing a logging mechanism for multi-user. I implemented this with the following design choices:
-1. 'Accountability' tracking. The app tracks each user, and whether they're actively present during the 'focus time'. Should they switch windows or tab for more than a determined time, the server will log that the user is no longer presence in the session.
-2. Unique session ID assigned to the users.
+## Final feature selections
 
-## Process
-The process started by brainstorming ideas on how to represent 'logs who did what'. I implemented basic session ID to each user, as well as proper server-side logging. Moreover, I would like to add logging features to log certain activities of the users. This is firstly done through implementing 'accountability'. I.e., a logging that tracks whether a user is active in a session, or if they're away:
-([8c6e30a](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/8c6e30a))
 
-I also implemented additional logging to record when users join a focus session, including whether they join at the beginning or partway through an ongoing session 
+## Final design choices
 
-> "implement the following logging: 1. logging on the time a user joins a focus session (i.e., if they join in the middle of a session, etc). 2. logging on the voting behaviour of the users."
+## Stack choices
 
-as well as logging on users’ voting behaviour to better capture and analyse the multi-user dynamics of the prototype 
+## Agentic workflow
+Throughout the project, I discussed and refined my ideas by firstly doing self-research, along the concepts of collaborative learning, individual learning, social pressures, etc. From this, I then gathered several features that I would like engineered. 
 
-([b8bcc51](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/b8bcc51)).
+I passed these features initially to the agent in Plan mode, for the agents to refine. After iterative refinement, the agent build the code. This resulted in the initial prototype:
+(cite)
+At each step of the process, I also requested the agent to construct specific test cases and test files, to test on each of the features:
+(cite)
 
-Finally, I refined the logging system to capture system status events, such as errors and warnings, and categorised the logs into three distinct types: basic session logging, feature-related logging, and system status logging. This separation improves the organisation and interpretability of the logs, making it easier to monitor user activity, understand feature usage, and identify potential system issues.
+A main drawback I observed with the agentic flow, is that agents are quick to recommend features, which may be superflous. As such, it is crucial to really constrained the initial feature ideation of the agent.
 
-> "can you split the logging into system logging (when a user joins or leaves) and activity logging (related to the features of the actual system)?"
-> "can you show the logging of the system as well (warning, error, etc), with proper log status? This should fall under a seperate 'status' logging"
-([33bd797](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/33bd797), [be6f2f2](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/be6f2f2))
+Moreover, I requested at each step, the summaries of what has been done, to ensure the development is on-track:
+(cite)
 
-Lastly, these functionalites were subsequently tested using built-in tests:
+I decided to do this interative development, as I observed Claude is not very good working on large chunks of a project at once. I had to therefore, breakdown each step.
 
-> "create a test to test multi user activity and the corresponding logging."
-([f39dc7c](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/f39dc7c))
+
+## Trade-off
+
+The trade-off of this workflow is the development process is relatively slow. In particular, as I must initially do manual research and make notes on what specific features and workflow I would like in the app. This is notably slower than if I had used the agent itself to ideate and discuss.
+
+However, this is a trade-off I was willing to take, as it results in: less credit being used at each step, each step is moving at the right direction.
+
+I belive this is a good software development practice as well, as it results in a product which I can actually take ownership of, and understand fully, though the development work was done through Agentic workflow.
 

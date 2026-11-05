@@ -6,9 +6,12 @@ import type {
   HeatmapEntry,
   HubStatsEntry,
   LobbyLocation,
+  LocationHistoryEntry,
   Me,
   ScheduledSession,
+  StreakEntry,
   UpcomingSessionForUser,
+  UserHistoryEntry,
 } from "./types";
 
 async function getJson<T>(path: string): Promise<T> {
@@ -48,6 +51,18 @@ export function getDiet(): Promise<{ modes: CognitiveDietEntry[] }> {
 
 export function getHubStats(): Promise<{ hubs: HubStatsEntry[] }> {
   return getJson("/api/me/hub-stats");
+}
+
+export function getStreaks(): Promise<{ streaks: StreakEntry[] }> {
+  return getJson("/api/me/streaks");
+}
+
+export function getHistory(limit = 20): Promise<{ history: UserHistoryEntry[] }> {
+  return getJson(`/api/me/history?limit=${limit}`);
+}
+
+export function getLocationHistory(slug: string, limit = 20): Promise<{ history: LocationHistoryEntry[] }> {
+  return getJson(`/api/locations/${slug}/history?limit=${limit}`);
 }
 
 export function getBuddies(): Promise<{ buddies: Buddy[] }> {

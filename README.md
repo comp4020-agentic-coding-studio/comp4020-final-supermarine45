@@ -1,89 +1,56 @@
-# Shut Up and Read
+# What I built: Shut Up and Read
+Shut Up and Read is a productivity app, initially based on ANUSA Shut-up-and-Write (SUAW). Regular get-together and focus on short, productive writing in an environment using Pomodoro Technique (50 minute sessions, 10 min rests for coffee, chats).
+https://web.archive.org/web/20230305234720/https://thesiswhisperer.com/shut-up-and-write/
 
-A real-time, location-based study timer for ANU students, built around one
-rigid hourly loop instead of a pile of settings. Pick a real ANU library hub
-and one of four cognitive modes, drop a one-line Deliverable Ticket, and board
-a Table of up to six people. Everyone's clock is the same server-driven
-clock — there is no "start" button for anyone to press.
+With the core idea that students used their time in such session/group settings effectively.
 
-## The definition of good this app is built to
+I worked on this idea and improve it and enhance it, such that it becomes a more comprehensive productive app, that connects students in various study spaces, to ....
 
-Most "productivity" software fails by giving you more choices — more
-settings, more ways to customize until customizing becomes the
-procrastination. This app works by **removing** choices instead: sessions
-start only on the hour, nobody can start one early or end one for the group,
-and a Table is one of a fixed, hardcoded list of real ANU study spaces, never
-a private room you create or name. The server alone holds `phase_end_at`, so
-joining mid-block returns the true remaining time, never a freshly-restarted
-countdown — and a mid-cycle server restart re-arms every Table's schedule
-from that same source of truth rather than losing the cadence.
+Moreover, I introduced several features that...
 
-Good accountability software also knows when you are distracted, not just
-when you admit it. The Focus Ring around each boarded student dims the moment
-their tab goes hidden — the Page Visibility API reporting straight to the
-server — and a tab left hidden too long demotes that person back to a
-watching Shadow, withholding credit for the block even if they return and
-check out at the end.
+## Observed Problem:
+The idea comes from the student’s own experience, finding it difficult to find a study partner/study group, be it due to difficulties aligning schedules, or in general, having no friends who would like to dedicate/block time to study.
 
-## The loop: Table, Ticket, Split-Phase Timer, Break
+Meanwhile, (research) studying in groups have several benefits:
+1. Collaborative learning generate insights that individual studying does not.
+2. Psychological persistence.
+3. Tackling complex problems to prevent cognitive overload.
+4. Co-action effect (doing tasks with peers creates social pressure to perform).
+5. Increases energy levels and stimulate (body doubling)
+6. Increased time on task
 
-A Table is keyed by **hub + cognitive mode together** — Silent Focus, Writing
-Clinic, Concept Pitch, and Problem-Solving each run as their own independent
-Table at every hub, capped at six boarded students apiece. Boarding requires
-typing a 60-character Deliverable Ticket; generic filler ("study", "stuff",
-"things") is rejected server-side, not just discouraged client-side.
+(INCLUDE CITATIONS HERE IN APA STYLE)
 
-Once the hour turns, a boarded Table's 50-minute focus block begins
-automatically for everyone on it at once. Silent Focus stays solo the whole
-block. The other three modes open a split-phase timer: a silent **Solo Gate**
-(amber) for the first stretch, then an **Open Collab** phase (sage green) —
-screens swap in Writing Clinic, pitches go out loud in Concept Pitch, the
-stuck get rubber-ducked in Problem-Solving. Problem-Solving is also the only
-mode where a ticket can be flagged "stuck," visible to the rest of the table
-the moment it's toggled.
+I started the project by looking at several (physicological) studies surrounding the concepts of focus, group studies, accountability, ...:
 
-At 50 minutes, a break modal opens for ten minutes: check your ticket off as
-completed or partial progress, sit with a short mode-specific reflection
-prompt, then give kudos and optionally queue your ticket for the next cycle
-before the break ends and the Table goes idle again.
 
-## The "Strava for Studying" social layer
+## Target User:
 
-Registered accounts persist Verified Focus Hours (VFH) — credited only when
-you stay for the entire block *and* check your ticket off at the break, not
-for merely showing up. A profile page shows a GitHub-style daily heatmap of
-VFH, a breakdown of which cognitive modes and which hubs you actually study
-in, and a Buddies list: accepted buddies' completed tickets surface in your
-feed. The only positive social signal is a fixed three-emoji Kudos, sent
-once per person per cycle, always at the break.
+General students (ANU) vs students of specific courses (study sessions on specific topics only).
+App will have four modes:
+1. Silent focus - general students, cross disciplines, who are looking to find study buddies and want to engage in silent, study sessions.
+2. Active collaboration - matches students without people who’s in the same course code/discipline; talk, engage, debate.
+....
 
-## Strict social limits
+## Feedback (TA):
+Based on the feedback of the TA, ANUSA's current 'Shut Up and Write" program is not very useful as it does not facilitate discussion between students (i.e., studying tips, how to write better). In line with this, and the project's spec for a multi-user behaviour, I design this new app with multi-user behaviours, including:
 
-No photo uploads — every avatar is a typographic monogram. No direct
-messages, no chat rooms, no feeds beyond the Buddy feed above. The interface
-avoids ticking seconds and other low-value motion on principle: the timer
-shows whole minutes only, flipping once a minute rather than once a second.
+## The Idea (i.e., features and their rationale)
+THe app was designed around four "Ways of working":
+....
+These were based on the research outlined in _Observed Problem_ section.
 
-## Watching, and joining anonymously
+Concretely, these were implemented as:
+1. "Strava-styled" statistics
+...
 
-Anyone can watch a Table's live timer and roster without signing in, counted
-separately from the boarded roster; every mutating action is rejected
-server-side regardless of what the client sends. "Continue anonymously"
-grants a random guest name with full participation parity — ticket, timer,
-kudos, the Focus Ring — withholding only what needs a persistent identity:
-VFH, the heatmap, buddies.
+## Why: What good
+These features were design to address several points we have highlighted earlier:
+1. Collaborative inhibition: overrides individual information when engaging in group discussion -> ??
+2. Social loafing: less effort put when individuals are working in group setting -> individual accountability (stats, strata like).
+3. Transaction cost when organising group dynamics -> make it simple to start and join study session, and automate organisation when possible.
+4. Amplifaction of error (if a dominant individual is confidently explaining something wrong, the group tends to just accept it) -> facilitate discussion (feedback sessions) after the end of the study, and during the study.
+5. Emotional contagion of stress (individual stress is mirrored in a group setting) -> ??
+6. Distraction conflict theory -> ??
+7. Visual distration in digital environment -> keep the design simple and productive focused.
 
-## Concurrency and the six-seat cap
-
-Node handles one socket event at a time with no `await` between reading and
-writing state, so when two people reach for a Table's sixth seat at once,
-exactly one ticket is accepted and the other is rejected with `table_full` —
-never a seventh seat, never a silently dropped request. The same guarantee
-resyncs a dropped connection on reconnect: rejoining mid-block returns the
-Table's true current state, not a stale or restarted one.
-
-## Deleting an account, completely
-
-Deletion requires re-entering your password and removes that user's tickets,
-kudos, buddy connections, and planned sessions — it never touches the shared
-Table timer anyone else is on, since no individual owns it.

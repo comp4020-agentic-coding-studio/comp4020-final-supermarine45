@@ -192,6 +192,27 @@ export interface UpcomingSessionForUser {
   startsAt: number;
 }
 
+export interface UserHistoryEntry {
+  ticketId: number;
+  locationSlug: string;
+  locationName: string;
+  activityMode: ActivityMode;
+  body: string;
+  stamp: TicketStamp | null;
+  stayedFullBlock: boolean;
+  cycleStartAt: number;
+}
+
+export interface LocationHistoryEntry {
+  ticketId: number;
+  username: string;
+  activityMode: ActivityMode;
+  body: string;
+  stamp: TicketStamp | null;
+  stayedFullBlock: boolean;
+  cycleStartAt: number;
+}
+
 export const KUDOS_EMOJI = ["⚡", "☕", "🧠"] as const;
 
 export function isGuestId(id: number): boolean {

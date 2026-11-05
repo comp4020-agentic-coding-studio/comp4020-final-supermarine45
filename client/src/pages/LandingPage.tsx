@@ -73,16 +73,16 @@ export function LandingPage() {
             <motion.div key={building.slug} variants={cardVariants} whileHover={{ y: -3 }} whileTap={{ scale: 0.98 }}>
               <Link
                 to={`/building/${building.slug}`}
-                className="block h-full rounded-xl border border-black/10 bg-white p-5 shadow-sm transition hover:shadow-lg hover:ring-1 hover:ring-anu-gold/40"
+                className="block h-full rounded-xl border border-line bg-surface p-5 shadow-sm transition hover:shadow-lg hover:ring-1 hover:ring-anu-gold/40"
               >
                 <div className="flex items-start justify-between gap-2">
-                  <h2 className="font-semibold text-charcoal">{building.name}</h2>
-                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${active ? "bg-sage" : "bg-black/15"}`} />
+                  <h2 className="font-semibold text-ink">{building.name}</h2>
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${active ? "bg-sage" : "bg-ink-muted/30"}`} />
                 </div>
-                <p className="mt-1 text-xs text-slate">
+                <p className="mt-1 text-xs text-ink-muted">
                   {building.roomCount} {building.roomCount === 1 ? "room" : "rooms"}
                 </p>
-                <div className="mt-4 flex items-center gap-3 font-mono text-xs text-slate">
+                <div className="mt-4 flex items-center gap-3 font-mono text-xs text-ink-muted">
                   {building.shadowCount > 0 && <span>{building.shadowCount} watching</span>}
                   <span className={active ? "font-medium text-sage-dim" : ""}>{building.occupants} here</span>
                 </div>
@@ -91,7 +91,7 @@ export function LandingPage() {
           );
         })}
       </motion.div>
-      {buildings.length === 0 && <p className="mt-12 text-sm text-slate">Loading locations&hellip;</p>}
+      {buildings.length === 0 && <p className="mt-12 text-sm text-ink-muted">Loading locations&hellip;</p>}
     </main>
   );
 }

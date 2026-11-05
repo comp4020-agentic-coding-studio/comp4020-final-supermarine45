@@ -45,7 +45,7 @@ export function LoginPage() {
 
   return (
     <main className="mx-auto max-w-sm px-6 py-16">
-      <h1 className="font-mono text-2xl font-semibold text-charcoal">Log in</h1>
+      <h1 className="font-mono text-2xl font-semibold text-ink">Log in</h1>
       <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-3">
         <input
           value={username}
@@ -53,7 +53,7 @@ export function LoginPage() {
           placeholder="username"
           autoComplete="username"
           required
-          className="rounded-md border border-black/15 px-3 py-2 text-sm outline-none focus:border-charcoal"
+          className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-ink"
         />
         <input
           type="password"
@@ -62,30 +62,30 @@ export function LoginPage() {
           placeholder="password"
           autoComplete="current-password"
           required
-          className="rounded-md border border-black/15 px-3 py-2 text-sm outline-none focus:border-charcoal"
+          className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-ink"
         />
-        <button type="submit" className="rounded-md bg-charcoal px-4 py-2 text-sm font-medium text-paper">
+        <button type="submit" className="rounded-md bg-ink px-4 py-2 text-sm font-medium text-canvas">
           Log in
         </button>
       </form>
       {error && <p className="mt-2 text-sm text-amber-700">{error}</p>}
-      <p className="mt-4 text-sm text-slate">
+      <p className="mt-4 text-sm text-ink-muted">
         No account?{" "}
-        <Link to="/register" className="text-charcoal underline">
+        <Link to="/register" className="text-ink underline">
           Register
         </Link>
       </p>
-      <hr className="my-6 border-black/10" />
+      <hr className="my-6 border-line" />
       <button
         type="button"
         onClick={handleGuest}
         disabled={guestBusy}
-        className="w-full rounded-md border border-black/15 px-4 py-2 text-sm font-medium text-charcoal disabled:opacity-50"
+        className="w-full rounded-md border border-line px-4 py-2 text-sm font-medium text-ink disabled:opacity-50"
       >
         Continue anonymously
       </button>
       {guestError && <p className="mt-2 text-sm text-amber-700">{guestError}</p>}
-      <p className="mt-2 text-xs text-slate">
+      <p className="mt-2 text-xs text-ink-muted">
         No account — a random name, nothing saved when you leave, no stats or ranking.
       </p>
     </main>

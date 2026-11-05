@@ -3,14 +3,14 @@ import type { HeatmapEntry } from "../types";
 const MS_PER_DAY = 86_400_000;
 
 function colorFor(count: number): string {
-  if (count <= 0) return "rgba(0,0,0,0.06)";
+  if (count <= 0) return "var(--color-track)";
   if (count === 1) return "#fde68a";
   if (count === 2) return "#d97706";
   return "#92400e";
 }
 
 export function HeatmapGrid({ days }: { days: HeatmapEntry[] }) {
-  if (days.length === 0) return <p className="text-sm text-slate">No focus blocks completed yet.</p>;
+  if (days.length === 0) return <p className="text-sm text-ink-muted">No focus blocks completed yet.</p>;
 
   const byDate = new Map(days.map((d) => [d.date, d.count]));
   const first = new Date(`${days[0].date}T00:00:00Z`);

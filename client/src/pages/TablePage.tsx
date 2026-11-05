@@ -11,6 +11,7 @@ import { PresentRoster } from "../components/PresentRoster";
 import { BreakModal } from "../components/BreakModal";
 import { StuckQueue } from "../components/StuckQueue";
 import { Whiteboard } from "../components/Whiteboard";
+import { ClockIcon } from "../components/icons";
 import { ticketBodyError } from "../validation";
 import type { ActivityMode, RoomStatus } from "../types";
 
@@ -125,12 +126,12 @@ export function TablePage() {
   const others = (room?.upcoming ?? []).filter((s) => !me || s.username !== me.username);
 
   return (
-    <main className="mx-auto max-w-4xl px-6 py-10">
-      <Link to={`/room/${slug}`} className="text-sm text-slate underline">
+    <main className="mx-auto max-w-6xl px-6 py-10">
+      <Link to={`/room/${slug}`} className="text-sm text-ink-muted underline">
         &larr; {joined?.location.name ?? slug}
       </Link>
-      <h1 className="mt-2 font-mono text-2xl font-semibold text-charcoal">{joined?.modeInfo.label ?? mode}</h1>
-      {joined && <p className="mt-1 text-sm text-slate">{joined.modeInfo.description}</p>}
+      <h1 className="mt-2 font-mono text-2xl font-semibold text-ink">{joined?.modeInfo.label ?? mode}</h1>
+      {joined && <p className="mt-1 text-sm text-ink-muted">{joined.modeInfo.description}</p>}
 
       {error && (
         <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
@@ -141,7 +142,7 @@ export function TablePage() {
         </div>
       )}
 
-      {!joined && !error && <p className="mt-6 text-sm text-slate">Connecting&hellip;</p>}
+      {!joined && !error && <p className="mt-6 text-sm text-ink-muted">Connecting&hellip;</p>}
 
       {joined && (
         <div
@@ -155,17 +156,17 @@ export function TablePage() {
                 e.preventDefault();
                 if (pseudonymInput.trim()) setPseudonym(pseudonymInput.trim());
               }}
-              className="flex items-center gap-2 rounded-md border border-black/10 bg-white px-4 py-3"
+              className="flex items-center gap-2 rounded-md border border-line bg-surface px-4 py-3"
             >
-              <span className="text-sm text-slate">Watching only &mdash; pick a name to join in:</span>
+              <span className="text-sm text-ink-muted">Watching only &mdash; pick a name to join in:</span>
               <input
                 value={pseudonymInput}
                 maxLength={24}
                 onChange={(e) => setPseudonymInput(e.target.value)}
                 placeholder="e.g. Quiet Otter"
-                className="min-w-0 flex-1 rounded border border-black/15 px-2 py-1 font-mono text-sm outline-none focus:border-charcoal"
+                className="min-w-0 flex-1 rounded border border-line bg-surface px-2 py-1 font-mono text-sm text-ink outline-none focus:border-ink"
               />
-              <button type="submit" className="rounded-md bg-charcoal px-3 py-1.5 text-sm font-medium text-paper">
+              <button type="submit" className="rounded-md bg-ink px-3 py-1.5 text-sm font-medium text-canvas">
                 Join in
               </button>
             </form>
@@ -261,20 +262,23 @@ export function TablePage() {
             />
           )}
 
-          <section className="rounded-lg border border-black/10 bg-white p-4">
-            <h2 className="font-medium text-charcoal">Plan ahead</h2>
-            <p className="mt-1 text-xs text-slate">Book a future hourly cycle at this hub so others know you're coming.</p>
+          <section className="rounded-lg border border-line bg-surface p-4">
+            <h2 className="flex items-center gap-2 font-medium text-ink">
+              <ClockIcon className="text-ink-muted" />
+              Plan ahead
+            </h2>
+            <p className="mt-1 text-xs text-ink-muted">Book a future hourly cycle at this hub so others know you're coming.</p>
             <div className="mt-3 space-y-1">
               {mine.length === 0 && others.length === 0 && (
-                <p className="text-sm text-slate">Nobody's planned a session here yet.</p>
+                <p className="text-sm text-ink-muted">Nobody's planned a session here yet.</p>
               )}
               {mine.length > 0 && (
                 <>
-                  <p className="text-xs font-medium uppercase tracking-wide text-slate">Yours</p>
+                  <p className="text-xs font-medium uppercase tracking-wide text-ink-muted">Yours</p>
                   {mine.map((s) => (
-                    <div key={s.id} className="flex items-center justify-between text-sm">
+                    <div key={s.id} className="flex items-center justify-between text-sm text-ink">
                       <span>{new Date(s.startsAt).toLocaleString()}</span>
-                      <button type="button" onClick={() => cancelSchedule(s.id)} className="text-slate underline">
+                      <button type="button" onClick={() => cancelSchedule(s.id)} className="text-ink-muted underline">
                         cancel
                       </button>
                     </div>
@@ -283,9 +287,9 @@ export function TablePage() {
               )}
               {others.length > 0 && (
                 <>
-                  <p className="mt-2 text-xs font-medium uppercase tracking-wide text-slate">Others</p>
+                  <p className="mt-2 text-xs font-medium uppercase tracking-wide text-ink-muted">Others</p>
                   {others.map((s) => (
-                    <div key={s.id} className="text-sm text-slate">
+                    <div key={s.id} className="text-sm text-ink-muted">
                       {new Date(s.startsAt).toLocaleString()} &mdash; {s.username}
                     </div>
                   ))}
@@ -298,14 +302,14 @@ export function TablePage() {
                   type="datetime-local"
                   value={scheduleAt}
                   onChange={(e) => setScheduleAt(e.target.value)}
-                  className="rounded border border-black/15 px-2 py-1 text-sm"
+                  className="rounded border border-line bg-surface px-2 py-1 text-sm text-ink"
                 />
-                <button type="submit" className="rounded-md border border-charcoal px-3 py-1.5 text-sm font-medium">
+                <button type="submit" className="rounded-md border border-ink px-3 py-1.5 text-sm font-medium text-ink">
                   Plan session
                 </button>
               </form>
             ) : (
-              <p className="mt-3 text-xs text-slate">Registered accounts only &mdash; log in to plan ahead.</p>
+              <p className="mt-3 text-xs text-ink-muted">Registered accounts only &mdash; log in to plan ahead.</p>
             )}
             {scheduleError && <p className="mt-1 text-xs text-amber-700">{scheduleError}</p>}
           </section>

@@ -44,7 +44,7 @@ export default function App() {
   // prefers-reduced-motion media query itself, live.
   return (
     <MotionConfig reducedMotion="user">
-      <div className="min-h-screen bg-paper">
+      <div className="min-h-screen bg-canvas">
         <Header />
         <AnimatedRoutes />
       </div>

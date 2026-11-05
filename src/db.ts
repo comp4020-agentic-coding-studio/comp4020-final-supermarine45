@@ -133,6 +133,34 @@ export interface BuddyFeedEntry {
   cycleStartAt: number;
 }
 
+// Every ticket a user has ever submitted, not just VFH-qualifying ones (see
+// getHeatmap/getCognitiveDiet) — history should show what actually happened,
+// including a board-then-leave-early (stamp: null, stayedFullBlock: false).
+export interface UserHistoryEntry {
+  ticketId: number;
+  locationSlug: string;
+  locationName: string;
+  activityMode: ActivityMode;
+  body: string;
+  stamp: TicketStamp | null;
+  stayedFullBlock: boolean;
+  cycleStartAt: number;
+}
+
+// Every ticket ever submitted at a location, regardless of who submitted it
+// or whether it was VFH-qualifying — "what has this room seen." Username and
+// mode are already snapshotted on the ticket row (Decision 7, see the
+// tickets table comment), so no join to users is needed.
+export interface LocationHistoryEntry {
+  ticketId: number;
+  username: string;
+  activityMode: ActivityMode;
+  body: string;
+  stamp: TicketStamp | null;
+  stayedFullBlock: boolean;
+  cycleStartAt: number;
+}
+
 // A per-(user, hub, mode) Rollover Vote streak — separate from VFH. VFH
 // certifies "I finished and checked out"; this certifies "the table voted to
 // keep going, and I was one of the yes votes," which is why it resets to 0
@@ -873,6 +901,32 @@ export function getHubStats(db: DatabaseSync, userId: number): HubStatsEntry[] {
         "GROUP BY tickets.location_id ORDER BY count DESC",
     )
     .all(userId) as unknown as HubStatsEntry[];
+}
+
+export function getUserSessionHistory(db: DatabaseSync, userId: number, limit = 20): UserHistoryEntry[] {
+  const rows = db
+    .prepare(
+      "SELECT tickets.id AS ticketId, locations.slug AS locationSlug, locations.name AS locationName, " +
+        "tickets.activity_mode AS activityMode, tickets.body AS body, tickets.stamp AS stamp, " +
+        "tickets.stayed_full_block AS stayedFullBlock, tickets.cycle_start_at AS cycleStartAt " +
+        "FROM tickets " +
+        "JOIN locations ON locations.id = tickets.location_id " +
+        "WHERE tickets.user_id = ? " +
+        "ORDER BY tickets.cycle_start_at DESC, tickets.id DESC LIMIT ?",
+    )
+    .all(userId, limit) as unknown as (Omit<UserHistoryEntry, "stayedFullBlock"> & { stayedFullBlock: number })[];
+  return rows.map((r) => ({ ...r, stayedFullBlock: !!r.stayedFullBlock }));
+}
+
+export function getLocationSessionHistory(db: DatabaseSync, locationId: number, limit = 20): LocationHistoryEntry[] {
+  const rows = db
+    .prepare(
+      "SELECT id AS ticketId, username, activity_mode AS activityMode, body, stamp, " +
+        "stayed_full_block AS stayedFullBlock, cycle_start_at AS cycleStartAt " +
+        "FROM tickets WHERE location_id = ? ORDER BY cycle_start_at DESC, id DESC LIMIT ?",
+    )
+    .all(locationId, limit) as unknown as (Omit<LocationHistoryEntry, "stayedFullBlock"> & { stayedFullBlock: number })[];
+  return rows.map((r) => ({ ...r, stayedFullBlock: !!r.stayedFullBlock }));
 }
 
 // --- buddies ---
