@@ -136,7 +136,7 @@ function userForToken(db: DatabaseSync, token: string): User | undefined {
 // Guest sessions are checked first (a cheap in-memory lookup) before falling
 // back to the real DB-backed session table, so one cookie mechanism serves
 // both identity kinds.
-function identityForToken(db: DatabaseSync, token: string): Identity | undefined {
+export function identityForToken(db: DatabaseSync, token: string): Identity | undefined {
   return guestForToken(token) ?? userForToken(db, token);
 }
 

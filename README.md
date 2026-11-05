@@ -44,6 +44,12 @@ Concretely, these were implemented as:
 1. "Strava-styled" statistics
 ...
 
+Additionally, I implemented comprehensive logging:
+
+1. System: currently logged in users.
+2. Activity: user activities.
+3. Status: server status.
+
 ## Why: What good
 These features were design to address several points we have highlighted earlier:
 1. Collaborative inhibition: overrides individual information when engaging in group discussion -> ??

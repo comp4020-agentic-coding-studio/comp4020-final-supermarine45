@@ -10,6 +10,7 @@ import {
   destroySession,
   findUserByEmail,
   findUserByUsername,
+  identityForToken,
   requireRealUser,
   sessionTokenFromCookieHeader,
   setSessionCookie,
@@ -17,6 +18,7 @@ import {
 } from "../auth.js";
 import { deleteAccount } from "../rooms.js";
 import { findUserById } from "../db.js";
+import { logSystemAction } from "../logger.js";
 
 const USERNAME_RE = /^[a-zA-Z0-9_-]{3,24}$/;
 // Format check only, by design: a real send-a-verification-link flow needs an
@@ -57,6 +59,7 @@ export function authRouter(db: DatabaseSync, io: Server): Router {
     const user = createUser(db, username, normalizedEmail, password);
     const token = createSession(db, user.id);
     setSessionCookie(res, token);
+    logSystemAction(db, null, `'${user.username}'`, "Registered a new account and signed in.");
     res.status(201).json({ username: user.username });
   });
 
@@ -64,17 +67,20 @@ export function authRouter(db: DatabaseSync, io: Server): Router {
     const { username, password } = req.body ?? {};
     const user = typeof username === "string" ? findUserByUsername(db, username) : undefined;
     if (!user || typeof password !== "string" || !verifyPassword(password, user.password_hash, user.salt)) {
+      logSystemAction(db, null, typeof username === "string" ? `'${username}'` : "unknown", "Failed login attempt (wrong username or password).");
       res.status(401).json({ error: "wrong username or password" });
       return;
     }
     const token = createSession(db, user.id);
     setSessionCookie(res, token);
+    logSystemAction(db, null, `'${user.username}'`, "Logged in.");
     res.json({ username: user.username });
   });
 
   router.post("/guest", (req, res) => {
     const { token, identity } = createGuestIdentity();
     setSessionCookie(res, token);
+    logSystemAction(db, null, `'${identity.username}'`, "Started a guest session.");
     res.status(201).json({ username: identity.username });
   });
 
@@ -97,6 +103,8 @@ export function authRouter(db: DatabaseSync, io: Server): Router {
   router.post("/logout", (req, res) => {
     const token = sessionTokenFromCookieHeader(req.headers.cookie);
     if (token) {
+      const identity = identityForToken(db, token);
+      if (identity) logSystemAction(db, null, `'${identity.username}'`, "Logged out.");
       destroySession(db, token);
       destroyGuestSession(token);
     }
@@ -114,6 +122,7 @@ export function authRouter(db: DatabaseSync, io: Server): Router {
       res.status(401).json({ error: "wrong password" });
       return;
     }
+    logSystemAction(db, null, `'${user.username}'`, "Deleted their account.");
     deleteAccount(io, db, user.id);
     clearSessionCookie(res);
     res.json({ ok: true });

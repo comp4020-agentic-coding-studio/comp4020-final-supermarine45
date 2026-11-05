@@ -70,3 +70,5 @@ display initially the building, then in each bulding, display the study spaces. 
 Add ways to give encouragements between users.
 
 Depending on user permission, will it possible to lock the user’s window (ex? To have the user very focused.
+
+- When a new user is created, it should check against the database to ensure the username or email address does not already exist.
