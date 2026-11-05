@@ -20,7 +20,7 @@ export function PresentRoster({
           <span className={r.userId === myUserId ? "text-sm font-medium text-charcoal" : "text-sm text-slate"}>
             {r.username}
           </span>
-          {r.tabHidden && <span className="h-1.5 w-1.5 rounded-full bg-amber-dim" />}
+          {r.checkinPending && <span title="check-in pending" className="h-1.5 w-1.5 rounded-full bg-amber-dim" />}
         </div>
       ))}
       {shadowCount > 0 && <span className="text-xs text-slate">+{shadowCount} watching</span>}

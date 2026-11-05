@@ -1,5 +1,5 @@
 // Spins up an isolated instance of the real app (dedicated port + throwaway
-// SQLite file, short TABLE_CYCLE_MS/TAB_HIDDEN_PENALTY_MS) so e2e scenarios
+// SQLite file, short TABLE_CYCLE_MS/CHECKIN_GRACE_MS) so e2e scenarios
 // never collide with a dev server you might already have running, and never
 // touch spec/'s own location-slug claims. Mirrors the command the CI
 // workflow uses (.github/workflows/checks.yml), just via tsx instead of the
@@ -39,7 +39,8 @@ async function waitForHttp(url, timeoutMs) {
 
 // cycleMs: how long one 50/10 table cycle takes end to end (default 18s,
 // matching CI: 15s focus / 3s break at the fixed 50:10 split).
-// tabPenaltyMs: how long tab-hidden takes to demote someone (default 8s).
+// checkinGraceMs: how long an unconfirmed check-in ping takes to demote
+// someone (default 8s).
 // cycleStartGranularityMs: how often an idle table rechecks for boarders
 // (default = cycleMs, not the production 5-minute default) — every scenario's
 // wait-for-focus budget is sized as `cycleMs + 10000` (see README's
@@ -47,7 +48,7 @@ async function waitForHttp(url, timeoutMs) {
 // bounded by cycleMs itself. Left at production's real 5-minute default,
 // scenarios here would have to wait out a real wall-clock 5 minutes instead
 // of a test-speed cycle.
-async function startServer({ cycleMs = 18000, tabPenaltyMs = 8000, cycleStartGranularityMs = cycleMs, label = "e2e" } = {}) {
+async function startServer({ cycleMs = 18000, checkinGraceMs = 8000, cycleStartGranularityMs = cycleMs, label = "e2e" } = {}) {
   const port = await findFreePort();
   const dataDir = fs.mkdtempSync(path.join(require("node:os").tmpdir(), `suar-${label}-`));
   const dbPath = path.join(dataDir, "app.db");
@@ -61,7 +62,7 @@ async function startServer({ cycleMs = 18000, tabPenaltyMs = 8000, cycleStartGra
       PORT: String(port),
       DB_PATH: dbPath,
       TABLE_CYCLE_MS: String(cycleMs),
-      TAB_HIDDEN_PENALTY_MS: String(tabPenaltyMs),
+      CHECKIN_GRACE_MS: String(checkinGraceMs),
       CYCLE_START_GRANULARITY_MS: String(cycleStartGranularityMs),
       CLIENT_DIST: path.join(ROOT, "client", "dist"),
     },
@@ -81,7 +82,7 @@ async function startServer({ cycleMs = 18000, tabPenaltyMs = 8000, cycleStartGra
     baseUrl,
     port,
     cycleMs,
-    tabPenaltyMs,
+    checkinGraceMs,
     cycleStartGranularityMs,
     dataDir,
     logPath,

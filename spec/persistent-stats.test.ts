@@ -83,6 +83,11 @@ function untilOwnTicketStamped(socket: Socket, userId: number): Promise<RoomUpda
 async function earnOneVfh(cookie: string, slug: string, mode: string, stamp: "completed" | "partial"): Promise<void> {
   const { id: userId } = await getMe(cookie);
   const socket = connect(cookie);
+  // Stays connected through a full focus block into break, long enough for
+  // the server's own check-in pings to reach it (see tab-telemetry.test.ts)
+  // — answering honestly keeps this helper's VFH stamp from being silently
+  // rejected by the unrelated check-in demotion path.
+  socket.on("room:checkin-request", () => socket.emit("room:checkin-confirm"));
   try {
     await once(socket, "connect");
     socket.emit("room:join", { slug, mode });
@@ -152,10 +157,10 @@ it(
 
 // VFH is binary-per-block, not proportional to elapsed time (Decision 6) —
 // staying the full 50 minutes and stamping is what earns it, nothing less.
-// Leaving mid-block, even most of the way through, earns exactly 0: the tab-
-// penalty demotion path (applyTabPenalty -> markTicketNotFullBlock) is the
-// server-side enforcement; this proves the plain "disconnected before break"
-// case the same path exists to cover.
+// Leaving mid-block, even most of the way through, earns exactly 0: the
+// check-in penalty demotion path (applyCheckinPenalty -> markTicketNotFullBlock)
+// is the server-side enforcement; this proves the plain "disconnected before
+// break" case the same path exists to cover.
 it(
   "earns zero VFH for a ticket whose holder left before the block ended",
   async () => {

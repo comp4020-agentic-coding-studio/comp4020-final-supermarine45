@@ -45,7 +45,7 @@ export interface RosterEntry {
   userId: number;
   username: string;
   isGuest: boolean;
-  tabHidden: boolean;
+  checkinPending: boolean;
 }
 
 export interface TimerPayload {
@@ -105,6 +105,13 @@ export interface RoomError {
   action: string;
 }
 
+// Sent directly to one socket (not part of RoomUpdatePayload — check-in state
+// is per-user, not shared table state): a micro check-in ping that must be
+// confirmed by deadlineAt or the server demotes this user back to Shadow.
+export interface CheckinRequestPayload {
+  deadlineAt: number;
+}
+
 export interface Identity {
   id: number;
   username: string;
@@ -142,6 +149,7 @@ export interface Me {
   vfhCount: number | null;
   isGuest: boolean;
   email?: string;
+  chimeEnabled?: boolean;
 }
 
 export interface HeatmapEntry {

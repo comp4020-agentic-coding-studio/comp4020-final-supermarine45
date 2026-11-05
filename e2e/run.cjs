@@ -28,7 +28,7 @@ async function main() {
   console.log(`Starting isolated server (${files.length} scenario file(s) to run)...`);
   const server = await startServer({ label: "run" });
   console.log(
-    `Server up at ${server.baseUrl} (cycleMs=${server.cycleMs}, tabPenaltyMs=${server.tabPenaltyMs}, cycleStartGranularityMs=${server.cycleStartGranularityMs})`,
+    `Server up at ${server.baseUrl} (cycleMs=${server.cycleMs}, checkinGraceMs=${server.checkinGraceMs}, cycleStartGranularityMs=${server.cycleStartGranularityMs})`,
   );
   console.log(`Server log: ${server.logPath}`);
 

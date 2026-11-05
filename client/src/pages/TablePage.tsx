@@ -4,12 +4,16 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useAuth } from "../context/useAuth";
 import { useTableSocket } from "../hooks/useTableSocket";
 import { useNow } from "../hooks/useNow";
+import { usePhaseNotifications } from "../hooks/usePhaseNotifications";
+import { useChimePreference } from "../hooks/useChimePreference";
 import { cancelSchedule, planSession } from "../api";
 import { PhaseBanner } from "../components/PhaseBanner";
+import { PipTimerButton } from "../components/PipTimerButton";
 import { TicketForm } from "../components/TicketForm";
 import { TableDashboard } from "../components/TableDashboard";
 import { PresentRoster } from "../components/PresentRoster";
 import { BreakModal } from "../components/BreakModal";
+import { CheckInModal } from "../components/CheckInModal";
 import { StuckQueue } from "../components/StuckQueue";
 import { Whiteboard } from "../components/Whiteboard";
 import { ClockIcon } from "../components/icons";
@@ -27,7 +31,7 @@ const ERROR_COPY: Record<string, string> = {
 export function TablePage() {
   const { slug, mode: modeParam } = useParams<{ slug: string; mode: string }>();
   const mode = modeParam as ActivityMode | undefined;
-  const { me } = useAuth();
+  const { me, refresh } = useAuth();
   const now = useNow();
   const navigate = useNavigate();
   const {
@@ -36,6 +40,7 @@ export function TablePage() {
     error,
     isShadow,
     cursors,
+    pendingCheckIn,
     submitTicket,
     toggleStuck,
     stampTicket,
@@ -45,6 +50,7 @@ export function TablePage() {
     whiteboardPaste,
     whiteboardHighlight,
     whiteboardCursor,
+    confirmCheckIn,
     reconnect,
     leave,
   } = useTableSocket(slug, mode);
@@ -56,6 +62,9 @@ export function TablePage() {
   const [autoJoin, setAutoJoin] = useState(false);
   const [autoJoinBody, setAutoJoinBody] = useState("");
   const [autoJoinError, setAutoJoinError] = useState<string | null>(null);
+
+  const { chimeEnabled } = useChimePreference(me, refresh);
+  usePhaseNotifications(room, me?.id, chimeEnabled);
 
   const prevStatusRef = useRef<RoomStatus | undefined>(undefined);
   useEffect(() => {
@@ -146,6 +155,12 @@ export function TablePage() {
           className={`mt-6 space-y-6 rounded-xl transition-colors duration-700 ${isDark ? "bg-oled p-6" : ""}`}
         >
           <PhaseBanner timer={room?.timer ?? { status: "idle", phaseEndAt: null, durationMs: null, subphase: null }} now={now} />
+
+          {room && room.timer.status === "focus" && (
+            <div className="flex justify-end">
+              <PipTimerButton timer={room.timer} now={now} />
+            </div>
+          )}
 
           {isShadow ? (
             <form
@@ -325,6 +340,14 @@ export function TablePage() {
               onLeave={handleLeave}
               reboardedBody={queuedReboard}
             />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {room?.timer.status === "focus" && pendingCheckIn && !isShadow && (
+          <motion.div key="checkin-modal">
+            <CheckInModal deadlineAt={pendingCheckIn.deadlineAt} onConfirm={confirmCheckIn} />
           </motion.div>
         )}
       </AnimatePresence>

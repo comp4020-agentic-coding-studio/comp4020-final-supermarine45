@@ -136,14 +136,14 @@ instead of the isolated one `run.cjs` spins up by default.
 ## Test-speed timing
 
 `lib/server.cjs` starts the server with `TABLE_CYCLE_MS=18000`,
-`TAB_HIDDEN_PENALTY_MS=8000`, and `CYCLE_START_GRANULARITY_MS=18000` by
+`CHECKIN_GRACE_MS=8000`, and `CYCLE_START_GRANULARITY_MS=18000` by
 default — the same values `.github/workflows/checks.yml` uses for the
 Docker-built app in CI (15s focus / 3s break at the fixed 50:10 split; 8s
-tab-penalty leaves 7s of focus still running afterward). `CYCLE_START_GRANULARITY_MS`
+check-in grace leaves 7s of focus still running afterward). `CYCLE_START_GRANULARITY_MS`
 is pinned to `cycleMs` rather than left at production's real 5-minute default,
 since a `cycleMs + 10000` timeout budget only holds if an idle table's
 worst-case wait is itself bounded by `cycleMs`. Scenario files should never
-invent their own timing constants — read `server.cycleMs`/`server.tabPenaltyMs`
+invent their own timing constants — read `server.cycleMs`/`server.checkinGraceMs`
 from the object `run(server)` receives, and size `withTimeout` budgets off
 those (typically `cycleMs + 10000` for "wait for the next phase transition",
 generous enough to absorb scheduling jitter without the suite becoming flaky).

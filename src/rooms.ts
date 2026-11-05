@@ -71,15 +71,25 @@ const KUDOS_EMOJI = new Set(["⚡", "☕", "🧠"]);
 const MAX_WHITEBOARD_TEXT_LEN = 2000;
 const MAX_WHITEBOARD_HIGHLIGHTS = 100;
 
-// Programmatic honesty (Week 11): how long an Active user's tab may stay
-// hidden before the server demotes them back to Shadow. Server-timed and
-// server-enforced — the client only ever reports visibility, never the
-// verdict. See markTabHidden/applyTabPenalty. Independently overridable from
-// TABLE_CYCLE_MS (same process.env.X || default convention) because it's a
-// fixed human-behavior constant, not a fraction of the hourly cycle — a
-// shortened test cycle needs this shortened too, or a 60s penalty could
-// never fire inside a test-speed focus block at all.
-export const TAB_HIDDEN_PENALTY_MS = Number(process.env.TAB_HIDDEN_PENALTY_MS) || 60_000;
+// Programmatic honesty (micro check-ins): tab visibility can no longer be
+// used as an activity signal — students legitimately tab away to code, use
+// Google Docs, etc. (see prompt-to-do.md) — so the server instead pings
+// every live Active user twice per focus block and requires an explicit
+// click-to-confirm within CHECKIN_GRACE_MS, or demotes them back to Shadow
+// exactly as the old tab-hidden penalty did. See requestCheckin/
+// applyCheckinPenalty. Offsets are expressed as a fraction of
+// FOCUS_DURATION_MS (same convention as ACTIVITY_MODE_INFO.splitMinutes/
+// splitMsFor) so they scale correctly under a test-speed TABLE_CYCLE_MS
+// override; CHECKIN_GRACE_MS is independently overridable (same
+// process.env.X || default convention) since it's a fixed human-response
+// budget, not a fraction of the cycle — a shortened test cycle needs this
+// shortened too, or the grace window could outlast the whole test-speed
+// focus block.
+export const CHECKIN_OFFSETS_MIN = [20, 35];
+function checkinOffsetsMs(): number[] {
+  return CHECKIN_OFFSETS_MIN.map((min) => FOCUS_DURATION_MS * (min / 50));
+}
+export const CHECKIN_GRACE_MS = Number(process.env.CHECKIN_GRACE_MS) || 2 * 60 * 1000;
 
 export interface ActivityModeInfo {
   mode: ActivityMode;
@@ -157,10 +167,10 @@ interface Presence {
   socketId: string;
   user: Identity;
   joinedAt: number;
-  // Tab-focus telemetry (Week 11): when this user's tab last went hidden
-  // (null if currently visible/never hidden), the pending 60s demotion
-  // timeout armed when it did, and whether that timeout already fired.
-  tabHiddenAt: number | null;
+  // Micro check-in: the deadline (epoch ms) this user must confirm by, if a
+  // ping is currently outstanding (undefined otherwise), and the pending
+  // demotion timeout armed alongside it.
+  checkinDeadlineAt?: number;
   penaltyTimeout: NodeJS.Timeout | null;
   demoted: boolean;
 }
@@ -176,7 +186,7 @@ interface RosterEntry {
   userId: number;
   username: string;
   isGuest: boolean;
-  tabHidden: boolean;
+  checkinPending: boolean;
 }
 
 // A table is keyed by (location, mode) jointly — up to 4 independent tables
@@ -202,6 +212,11 @@ const scheduledTransitions = new Map<string, NodeJS.Timeout>();
 // this one never changes DB state, it just makes the subphase flip show up
 // live instead of waiting for some other event to trigger a broadcast.
 const subphaseTimers = new Map<string, NodeJS.Timeout>();
+// tableKey -> the two one-off timeouts that fire a check-in ping at
+// CHECKIN_OFFSETS_MIN into a focus block. Separate from scheduledTransitions
+// for the same reason subphaseTimers is: these never touch DB state, they
+// just drive a per-socket request/grace cycle (see requestCheckin).
+const checkinTimers = new Map<string, NodeJS.Timeout[]>();
 // Shadows (no socket.data.user) never enter `presence`, so they're invisible
 // to roster()/occupancy() — this tracks them separately, by socket id only
 // (no identity to keep), purely so the table/lobby can show "N watching".
@@ -233,9 +248,9 @@ function shadowCount(locationId: number, mode: ActivityMode): number {
 // React's key={r.userId} in PresentRoster) sees duplicate rows that don't
 // behave like duplicates: a boarded ticket clears the userId from the
 // *filter*, but a keyed list that briefly held two rows under the same key
-// can strand one of them in the DOM instead of removing it. tabHidden is
-// OR'd across a person's connections so any hidden tab still raises the
-// warning, matching the penalty mechanism's per-connection risk tracking.
+// can strand one of them in the DOM instead of removing it. checkinPending is
+// OR'd across a person's connections so any one outstanding ping still raises
+// the warning, matching the demotion mechanism's per-connection risk tracking.
 function roster(locationId: number, mode: ActivityMode): RosterEntry[] {
   const table = presence.get(tableKey(locationId, mode));
   if (!table) return [];
@@ -244,14 +259,14 @@ function roster(locationId: number, mode: ActivityMode): RosterEntry[] {
     if (p.demoted) continue;
     const existing = byUser.get(p.user.id);
     if (existing) {
-      existing.tabHidden = existing.tabHidden || p.tabHiddenAt !== null;
+      existing.checkinPending = existing.checkinPending || p.checkinDeadlineAt !== undefined;
       continue;
     }
     byUser.set(p.user.id, {
       userId: p.user.id,
       username: p.user.username,
       isGuest: isGuest(p.user.id),
-      tabHidden: p.tabHiddenAt !== null,
+      checkinPending: p.checkinDeadlineAt !== undefined,
     });
   }
   return [...byUser.values()];
@@ -385,6 +400,9 @@ function clearTableTimer(key: string): void {
   const whiteboardFallback = whiteboardFallbackTimers.get(key);
   if (whiteboardFallback) clearTimeout(whiteboardFallback);
   whiteboardFallbackTimers.delete(key);
+  const checkins = checkinTimers.get(key);
+  if (checkins) checkins.forEach(clearTimeout);
+  checkinTimers.delete(key);
 }
 
 // Arms the next transition for one (location, mode) table, however far in
@@ -410,6 +428,7 @@ function armNextTransition(io: Server, db: DatabaseSync, locationId: number, mod
     if (state.status === "focus") {
       armSubphaseTimer(io, db, locationId, mode, state);
       armWhiteboardFallbackTimer(io, db, locationId, mode, state);
+      armCheckinTimers(io, db, locationId, mode, state);
     }
     return;
   }
@@ -465,6 +484,26 @@ function armWhiteboardFallbackTimer(io: Server, db: DatabaseSync, locationId: nu
       broadcastRoom(io, db, locationId, mode);
     }, delay),
   );
+}
+
+// Arms the two per-focus-block check-in pings (see CHECKIN_OFFSETS_MIN).
+// Each fires requestCheckin for every live, non-demoted presence at this
+// table independently — a ping already answered or already past (e.g. armed
+// against a mid-block join that re-syncs via armNextTransition) just no-ops
+// per-offset rather than needing its own guard here.
+function armCheckinTimers(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, state: RoomState): void {
+  const key = tableKey(locationId, mode);
+  const timers = checkinOffsetsMs()
+    .map((offset) => state.phaseStartedAt! + offset - Date.now())
+    .filter((delay) => delay > 0)
+    .map((delay) =>
+      setTimeout(() => {
+        const table = presence.get(key);
+        if (!table) return;
+        for (const socketId of [...table.keys()]) requestCheckin(io, db, locationId, mode, socketId);
+      }, delay),
+    );
+  checkinTimers.set(key, timers);
 }
 
 function beginScheduledFocus(
@@ -529,50 +568,54 @@ export function rearmTimers(io: Server, db: DatabaseSync): void {
 }
 
 // ---------------------------------------------------------------------------
-// Tab-visibility telemetry (Week 11 carryover): a user whose tab stays hidden
-// for TAB_HIDDEN_PENALTY_MS is demoted — their Focus Ring goes dark and their
-// current-cycle ticket is marked not-full-block, so VFH withholds credit even
-// if they come back and stamp afterward. Demotion never evicts anyone or
-// frees their ticket's capacity slot, since the 6-cap is about boarded
-// tickets, not live connections — but it does revoke write access: every
-// mutating handler's guard re-checks isDemoted() live (findPresence(...)
-// .demoted), the same way it re-checks isShadow, since this fires from a
-// setTimeout with no reach into that connection's own closure state.
+// Micro check-ins: twice per focus block (CHECKIN_OFFSETS_MIN), every live
+// Active user is pinged and must click-to-confirm within CHECKIN_GRACE_MS or
+// is demoted back to Shadow — replacing tab-visibility as the activity
+// signal (students legitimately tab away to code, use Google Docs, etc.).
+// Demotion never evicts anyone or frees their ticket's capacity slot, since
+// the 6-cap is about boarded tickets, not live connections — but it does
+// revoke write access: every mutating handler's guard re-checks isDemoted()
+// live (findPresence(...).demoted), the same way it re-checks isShadow,
+// since this fires from a setTimeout with no reach into that connection's
+// own closure state.
 // ---------------------------------------------------------------------------
 
 function findPresence(locationId: number, mode: ActivityMode, socketId: string): Presence | undefined {
   return presence.get(tableKey(locationId, mode))?.get(socketId);
 }
 
-function markTabHidden(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, socketId: string): void {
+// Fires a single ping at one presence: sets its deadline, notifies just that
+// socket (check-in state is per-user, not shared table state, so this is a
+// targeted emit rather than going through broadcastRoom/room:update), and
+// arms the grace-period demotion timeout.
+function requestCheckin(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, socketId: string): void {
   const entry = findPresence(locationId, mode, socketId);
-  if (!entry || entry.tabHiddenAt !== null) return;
-  entry.tabHiddenAt = Date.now();
-  entry.penaltyTimeout = setTimeout(
-    () => applyTabPenalty(io, db, locationId, mode, socketId),
-    TAB_HIDDEN_PENALTY_MS,
-  );
+  if (!entry || entry.demoted || entry.checkinDeadlineAt !== undefined) return;
+  const deadlineAt = Date.now() + CHECKIN_GRACE_MS;
+  entry.checkinDeadlineAt = deadlineAt;
+  entry.penaltyTimeout = setTimeout(() => applyCheckinPenalty(io, db, locationId, mode, socketId), CHECKIN_GRACE_MS);
+  io.to(socketId).emit("room:checkin-request", { deadlineAt });
   broadcastRoom(io, db, locationId, mode);
 }
 
-function clearTabHidden(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, socketId: string): void {
+function confirmCheckin(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, socketId: string): void {
   const entry = findPresence(locationId, mode, socketId);
-  if (!entry || entry.tabHiddenAt === null) return;
-  entry.tabHiddenAt = null;
+  if (!entry || entry.checkinDeadlineAt === undefined) return;
+  entry.checkinDeadlineAt = undefined;
   if (entry.penaltyTimeout) clearTimeout(entry.penaltyTimeout);
   entry.penaltyTimeout = null;
   broadcastRoom(io, db, locationId, mode);
 }
 
-function applyTabPenalty(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, socketId: string): void {
+function applyCheckinPenalty(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, socketId: string): void {
   const entry = findPresence(locationId, mode, socketId);
-  if (!entry || entry.tabHiddenAt === null) return;
+  if (!entry || entry.checkinDeadlineAt === undefined) return;
   entry.demoted = true;
   entry.penaltyTimeout = null;
   const state = getTable(db, locationId, mode);
   if (state.status === "focus") {
     markTicketNotFullBlock(db, locationId, mode, entry.user.id, state.phaseStartedAt!);
-    logRoomAction(db, locationId, identityLabel(entry.user, socketId), "Demoted to Shadow after 60s of tab hidden.");
+    logRoomAction(db, locationId, identityLabel(entry.user, socketId), "Demoted to Shadow after missing a check-in.");
   }
   broadcastRoom(io, db, locationId, mode);
 }
@@ -639,7 +682,7 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       return socket.data.user as Identity | undefined;
     }
 
-    // applyTabPenalty() only flips Presence.demoted — it has no reach into
+    // applyCheckinPenalty() only flips Presence.demoted — it has no reach into
     // this connection's own isShadow closure, since it fires from a
     // setTimeout outside this closure and may run long after join-time set
     // it. Every mutating handler below re-checks this live, the same way the
@@ -667,7 +710,6 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
           socketId: socket.id,
           user,
           joinedAt: Date.now(),
-          tabHiddenAt: null,
           penaltyTimeout: null,
           demoted: false,
         });
@@ -710,7 +752,6 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
           socketId: socket.id,
           user: identity,
           joinedAt: Date.now(),
-          tabHiddenAt: null,
           penaltyTimeout: null,
           demoted: false,
         });
@@ -720,14 +761,15 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       }
     });
 
-    socket.on("tab_hidden", () => {
-      if (!joined || isShadow) return;
-      markTabHidden(io, db, joined.locationId, joined.mode, socket.id);
-    });
-
-    socket.on("tab_visible", () => {
-      if (!joined || isShadow) return;
-      clearTabHidden(io, db, joined.locationId, joined.mode, socket.id);
+    socket.on("room:checkin-confirm", () => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:checkin-confirm. Rejected.");
+        socket.emit("room:error", { error: "unauthorized", action: "room:checkin-confirm" });
+        return;
+      }
+      confirmCheckin(io, db, joined.locationId, joined.mode, socket.id);
     });
 
     socket.on("room:submit-ticket", ({ body }: { body?: string }) => {
@@ -925,7 +967,7 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
     // excluded from the sender so nobody sees their own cursor echoed back.
     // Silently dropped on a failed gate rather than room:error — this can
     // fire many times a second and isn't a user-initiated action worth
-    // surfacing an error for, same posture as tab_hidden/tab_visible above.
+    // surfacing an error for.
     socket.on("room:whiteboard-cursor", ({ x, y }: { x?: number; y?: number }) => {
       if (!joined) return;
       const user = currentIdentity();

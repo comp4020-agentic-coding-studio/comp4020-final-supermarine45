@@ -42,7 +42,7 @@ export function TableDashboard({
       {tickets.map((ticket) => {
         const rosterEntry = roster.find((r) => r.userId === ticket.userId);
         const isMe = ticket.userId === myUserId;
-        const tabHidden = rosterEntry?.tabHidden ?? false;
+        const checkinPending = rosterEntry?.checkinPending ?? false;
         return (
           <motion.div
             layout
@@ -55,7 +55,7 @@ export function TableDashboard({
           >
             <div className="flex items-center gap-3">
               <div className="relative">
-                <PerimeterRing filled={elapsed} color={tabHidden ? "#d97706" : ringColor(timer)} size={44} />
+                <PerimeterRing filled={elapsed} color={checkinPending ? "#d97706" : ringColor(timer)} size={44} />
                 <div className="absolute inset-0 flex items-center justify-center">
                   <Avatar name={ticket.username} size={28} />
                 </div>
@@ -65,7 +65,7 @@ export function TableDashboard({
                   {ticket.username}
                   {isMe && <span className="ml-1 opacity-60">(you)</span>}
                 </p>
-                {tabHidden && <p className="text-xs text-amber-500">away from tab</p>}
+                {checkinPending && <p className="text-xs text-amber-500">check-in pending</p>}
               </div>
               {ticket.stuck && mode === "problem" && (
                 <span title="stuck — needs help" className="shrink-0 text-lg">

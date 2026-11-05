@@ -77,6 +77,14 @@ export function getMySchedule(): Promise<{ sessions: UpcomingSessionForUser[] }>
   return getJson("/api/me/schedule");
 }
 
+export async function setChimePref(chimeEnabled: boolean): Promise<void> {
+  await fetch("/api/me/prefs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chimeEnabled }),
+  });
+}
+
 export async function requestBuddy(addresseeId: number): Promise<{ ok: true } | { error: string }> {
   const res = await fetch("/api/buddies/request", {
     method: "POST",

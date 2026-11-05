@@ -3,6 +3,7 @@ import { io, type Socket } from "socket.io-client";
 import { adoptSession } from "../api";
 import type {
   ActivityMode,
+  CheckinRequestPayload,
   PseudonymSetPayload,
   RoomError,
   RoomJoinedPayload,
@@ -25,6 +26,7 @@ export interface TableSocketState {
   error: RoomError | null;
   isShadow: boolean;
   cursors: CursorMap;
+  pendingCheckIn: CheckinRequestPayload | null;
   submitTicket: (body: string) => void;
   toggleStuck: () => void;
   stampTicket: (stamp: "completed" | "partial") => void;
@@ -34,6 +36,7 @@ export interface TableSocketState {
   whiteboardPaste: (text: string) => void;
   whiteboardHighlight: (start: number, end: number) => void;
   whiteboardCursor: (x: number, y: number) => void;
+  confirmCheckIn: () => void;
   reconnect: () => void;
   leave: () => void;
 }
@@ -68,6 +71,7 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
   const [error, setError] = useState<RoomError | null>(null);
   const [isShadow, setIsShadow] = useState(false);
   const [cursors, setCursors] = useState<CursorMap>({});
+  const [pendingCheckIn, setPendingCheckIn] = useState<CheckinRequestPayload | null>(null);
 
   useEffect(() => {
     if (!slug || !mode) return;
@@ -76,6 +80,7 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
     setRoom(null);
     setError(null);
     setCursors({});
+    setPendingCheckIn(null);
 
     function join(): void {
       socket.emit("room:join", { slug, mode });
@@ -110,6 +115,10 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
     function onCursor(payload: WhiteboardCursorEvent): void {
       setCursors((prev) => ({ ...prev, [payload.userId]: { ...payload, updatedAt: Date.now() } }));
     }
+    // Targeted at this socket only — see src/rooms.ts's requestCheckin.
+    function onCheckinRequest(payload: CheckinRequestPayload): void {
+      setPendingCheckIn(payload);
+    }
 
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
@@ -118,6 +127,7 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
     socket.on("room:error", onError);
     socket.on("pseudonym:set", onPseudonymSet);
     socket.on("whiteboard:cursor", onCursor);
+    socket.on("room:checkin-request", onCheckinRequest);
 
     if (socket.connected) onConnect();
     else setStatus("connecting");
@@ -130,17 +140,9 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
       socket.off("room:error", onError);
       socket.off("pseudonym:set", onPseudonymSet);
       socket.off("whiteboard:cursor", onCursor);
+      socket.off("room:checkin-request", onCheckinRequest);
     };
   }, [slug, mode]);
-
-  useEffect(() => {
-    const socket = getSocket();
-    function onVisibilityChange(): void {
-      socket.emit(document.hidden ? "tab_hidden" : "tab_visible");
-    }
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, []);
 
   return {
     status,
@@ -149,6 +151,7 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
     error,
     isShadow,
     cursors,
+    pendingCheckIn,
     submitTicket: (body: string) => getSocket().emit("room:submit-ticket", { body }),
     toggleStuck: () => getSocket().emit("room:toggle-stuck"),
     stampTicket: (stamp) => getSocket().emit("room:stamp-ticket", { stamp }),
@@ -158,6 +161,10 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
     whiteboardPaste: (text: string) => getSocket().emit("room:whiteboard-paste", { text }),
     whiteboardHighlight: (start: number, end: number) => getSocket().emit("room:whiteboard-highlight", { start, end }),
     whiteboardCursor: (x: number, y: number) => getSocket().emit("room:whiteboard-cursor", { x, y }),
+    confirmCheckIn: () => {
+      setPendingCheckIn(null);
+      getSocket().emit("room:checkin-confirm");
+    },
     reconnect: () => {
       if (!slug || !mode) return;
       setError(null);

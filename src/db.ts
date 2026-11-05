@@ -16,6 +16,7 @@ export interface User extends Identity {
   password_hash: string;
   salt: string;
   created_at: number;
+  chime_enabled: number;
 }
 
 // Guest identities are allocated negative ids (see auth.ts) specifically so
@@ -475,6 +476,7 @@ function migrate(db: DatabaseSync): void {
   ensureColumn(db, "users", "email", "email TEXT NOT NULL DEFAULT ''");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (email)");
   ensureColumn(db, "tickets", "stuck_at", "stuck_at INTEGER");
+  ensureColumn(db, "users", "chime_enabled", "chime_enabled INTEGER NOT NULL DEFAULT 0");
 }
 
 // Insert-or-ignore per (slug, mode), rather than bailing out once any row
@@ -991,6 +993,10 @@ export function getBuddyFeed(db: DatabaseSync, userId: number, limit = 20): Budd
 
 export function findUserById(db: DatabaseSync, id: number): User | undefined {
   return db.prepare("SELECT * FROM users WHERE id = ?").get(id) as unknown as User | undefined;
+}
+
+export function setChimeEnabled(db: DatabaseSync, userId: number, enabled: boolean): void {
+  db.prepare("UPDATE users SET chime_enabled = ? WHERE id = ?").run(enabled ? 1 : 0, userId);
 }
 
 // Returns the distinct locationIds that had a booking from this user, so the

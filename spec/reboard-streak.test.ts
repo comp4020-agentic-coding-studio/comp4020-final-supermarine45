@@ -104,6 +104,12 @@ it(
 
     const a = connect(aCookie);
     const b = connect(bCookie);
+    // Both sockets stay connected across multiple cycles' focus blocks, long
+    // enough for the server's own check-in pings to reach them (see
+    // tab-telemetry.test.ts) — answering honestly keeps this test about
+    // reboard streaks, not the unrelated check-in demotion path.
+    a.on("room:checkin-request", () => a.emit("room:checkin-confirm"));
+    b.on("room:checkin-request", () => b.emit("room:checkin-confirm"));
     try {
       await Promise.all([once(a, "connect"), once(b, "connect")]);
       a.emit("room:join", { slug, mode });
@@ -171,6 +177,11 @@ it(
     const aCookie = await registerAndGetCookie(`streak-reset-a-${uid}`);
 
     const a = connect(aCookie);
+    // Stays connected across three cycles' focus blocks, long enough for the
+    // server's own check-in pings to reach it (see tab-telemetry.test.ts) —
+    // answering honestly keeps this test about reboard streaks, not the
+    // unrelated check-in demotion path.
+    a.on("room:checkin-request", () => a.emit("room:checkin-confirm"));
     try {
       await once(a, "connect");
       a.emit("room:join", { slug, mode });

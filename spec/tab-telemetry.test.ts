@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { io, type Socket } from "socket.io-client";
 import { expect, inject, it } from "vitest";
-import { TAB_HIDDEN_PENALTY_MS, TABLE_CYCLE_MS } from "../src/rooms.js";
+import { CHECKIN_GRACE_MS, TABLE_CYCLE_MS } from "../src/rooms.js";
 
 const baseUrl = inject("baseUrl");
 
@@ -25,7 +25,7 @@ function once<T = unknown>(socket: Socket, event: string): Promise<T> {
   return new Promise((resolve) => socket.once(event, resolve));
 }
 
-type RosterEntry = { username: string; tabHidden: boolean };
+type RosterEntry = { username: string; checkinPending: boolean };
 
 function untilRosterEntry(
   socket: Socket,
@@ -77,17 +77,22 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 
 const mode = "silent";
 
-// Live Accountability: switching away briefly flips the roster dot to amber
-// for everyone watching, but returning before the 60s deadline clears it
-// with no penalty — the warning is a live telemetry signal, not a strike
-// that sticks around once you're back.
+type CheckinRequest = { deadlineAt: number };
+
+// Programmatic Honesty (micro check-ins): tab visibility is no longer the
+// activity signal (students legitimately tab away to code, use Google Docs,
+// etc. — see prompt-to-do.md) — the server pings every live Active user
+// directly (CHECKIN_OFFSETS_MIN into the focus block) and requires an
+// explicit click-to-confirm within CHECKIN_GRACE_MS. Confirming in time
+// clears the roster's amber dot with no penalty, same as the old tab-hidden
+// warning used to, and the table stays in focus throughout.
 it(
-  "clears the tab-hidden warning if tab_visible arrives before the deadline",
+  "clears the check-in warning if the user confirms before the deadline",
   async () => {
     const slug = "menzies-l2";
-    const residentName = `tab-resident-${randomUUID().slice(0, 8)}`;
+    const residentName = `ckin-resident-${randomUUID().slice(0, 8)}`;
     const residentCookie = await registerAndGetCookie(residentName);
-    const watcherCookie = await registerAndGetCookie(`tab-watcher-${randomUUID().slice(0, 8)}`);
+    const watcherCookie = await registerAndGetCookie(`ckin-watcher-${randomUUID().slice(0, 8)}`);
 
     const resident = connect(residentCookie);
     const watcher = connect(watcherCookie);
@@ -112,35 +117,39 @@ it(
       await withTimeout(residentFocus, TABLE_CYCLE_MS + 10000, "resident to see focus status");
       await withTimeout(watcherFocus, TABLE_CYCLE_MS + 10000, "watcher to see focus update");
 
-      const sawAmber = untilRosterEntry(watcher, residentName, (e) => e.tabHidden === true);
-      resident.emit("tab_hidden");
-      await withTimeout(sawAmber, 5000, "watcher to see the resident's dot go amber");
+      // Wait for the real, server-scheduled first ping (armCheckinTimers) —
+      // not a client-triggered fake — so this proves the actual 20-minute
+      // (test-speed-scaled) offset fires and targets just this socket.
+      const sawPending = untilRosterEntry(watcher, residentName, (e) => e.checkinPending === true);
+      const checkinRequested = once<CheckinRequest>(resident, "room:checkin-request");
+      await withTimeout(checkinRequested, TABLE_CYCLE_MS + 10000, "resident to receive the first check-in ping");
+      await withTimeout(sawPending, 5000, "watcher to see the resident's dot go amber");
 
-      const sawGreenAgain = untilRosterEntry(watcher, residentName, (e) => e.tabHidden === false);
-      resident.emit("tab_visible");
-      await withTimeout(sawGreenAgain, 5000, "watcher to see the resident's dot clear");
+      const sawClear = untilRosterEntry(watcher, residentName, (e) => e.checkinPending === false);
+      resident.emit("room:checkin-confirm");
+      await withTimeout(sawClear, 5000, "watcher to see the resident's dot clear");
+
+      // Confirming must not demote: the table stays in focus and the
+      // resident can still act on it.
+      const sawKudosRejection = once<{ error: string; action: string }>(resident, "room:error");
+      resident.emit("room:send-kudos", { toUserId: -1, emoji: "⚡" });
+      const payload = await withTimeout(sawKudosRejection, 5000, "room:error for kudos during focus");
+      expect(payload).toEqual({ error: "not_breaking", action: "room:send-kudos" });
     } finally {
-      // No manual reset exists anymore (Decision 2) — the table's ticket for
-      // this cycle simply stays until the next hourly cycle mark. Just close
-      // every socket; there is nothing left to tear down server-side.
       resident.close();
       watcher.close();
     }
   },
-  TABLE_CYCLE_MS + 20000,
+  TABLE_CYCLE_MS * 2 + 20000,
 );
 
-// Server-Side Penalty: a tab left hidden for the full window is demoted by
-// the server alone, with no client action required to "confirm" the
-// penalty — the roster drops them and the socket loses write access from
-// that point on, even though it never disconnected.
 it(
-  "demotes a user back to Shadow after the full 60s window with no tab_visible",
+  "demotes a user back to Shadow after the full check-in grace window with no confirmation",
   async () => {
     const slug = "chifley-l2";
-    const residentName = `tab-lost-${randomUUID().slice(0, 8)}`;
+    const residentName = `checkin-lost-${randomUUID().slice(0, 8)}`;
     const residentCookie = await registerAndGetCookie(residentName);
-    const watcherCookie = await registerAndGetCookie(`tab-stay-${randomUUID().slice(0, 8)}`);
+    const watcherCookie = await registerAndGetCookie(`checkin-stay-${randomUUID().slice(0, 8)}`);
 
     const resident = connect(residentCookie);
     const watcher = connect(watcherCookie);
@@ -160,10 +169,6 @@ it(
       await withTimeout(residentFocus, TABLE_CYCLE_MS + 10000, "resident to see focus status");
       await withTimeout(watcherFocus, TABLE_CYCLE_MS + 10000, "watcher to see focus update");
 
-      // The live warning fires immediately — proving the eventual demotion
-      // below is a harsher escalation of this same signal, not an unrelated
-      // mechanism.
-      const sawAmber = untilRosterEntry(watcher, residentName, (e) => e.tabHidden === true);
       const residentGone = new Promise<void>((resolve) => {
         const handler = (payload: { roster: { username: string }[] }): void => {
           if (!payload.roster.some((r) => r.username === residentName)) {
@@ -174,11 +179,10 @@ it(
         watcher.on("room:update", handler);
       });
 
-      resident.emit("tab_hidden");
-      await withTimeout(sawAmber, 5000, "watcher to see the resident's dot go amber");
-      // No tab_visible — really wait out the server's own timer rather than
-      // faking it, matching this suite's no-fake-timers convention.
-      await withTimeout(residentGone, TAB_HIDDEN_PENALTY_MS + 10000, "roster to drop the demoted user");
+      // No tab_hidden event exists anymore (Decision: micro check-ins replace
+      // tab-visibility tracking) — never confirming leaves the grace timeout
+      // to fire on its own, same as the old "no tab_visible" path.
+      await withTimeout(residentGone, CHECKIN_GRACE_MS + TABLE_CYCLE_MS + 10000, "roster to drop the demoted user");
 
       // The demoted socket never disconnected, but it's lost write access —
       // proving this is a real server-side demotion, not cosmetic.
@@ -191,5 +195,5 @@ it(
       watcher.close();
     }
   },
-  TABLE_CYCLE_MS + TAB_HIDDEN_PENALTY_MS + 30000,
+  TABLE_CYCLE_MS + CHECKIN_GRACE_MS + 30000,
 );

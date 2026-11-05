@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/useAuth";
+import { useChimePreference } from "../hooks/useChimePreference";
 import {
   acceptBuddy,
   deleteAccount,
@@ -21,6 +22,10 @@ import type { Buddy, BuddyFeedEntry, HeatmapEntry, StreakEntry, UserHistoryEntry
 
 export function AccountPage() {
   const { me, refresh } = useAuth();
+  const { chimeEnabled, setChimeEnabled } = useChimePreference(me, refresh);
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission | "unsupported">(
+    typeof Notification === "undefined" ? "unsupported" : Notification.permission,
+  );
   const navigate = useNavigate();
   const [heatmap, setHeatmap] = useState<HeatmapEntry[]>([]);
   const [diet, setDiet] = useState<{ label: string; count: number }[]>([]);
@@ -86,6 +91,12 @@ export function AccountPage() {
         <p className="mt-2 text-sm text-ink-muted">
           Anonymous guest &mdash; there's nothing to manage here, and nothing is saved when you leave.
         </p>
+        <NotificationPrefs
+          chimeEnabled={chimeEnabled}
+          setChimeEnabled={setChimeEnabled}
+          notifPermission={notifPermission}
+          setNotifPermission={setNotifPermission}
+        />
       </main>
     );
   }
@@ -100,6 +111,13 @@ export function AccountPage() {
       <p className="mt-3 font-mono text-3xl text-amber-700">
         {me.vfhCount ?? 0} <span className="text-base text-ink-muted">Verified Focus Hours</span>
       </p>
+
+      <NotificationPrefs
+        chimeEnabled={chimeEnabled}
+        setChimeEnabled={setChimeEnabled}
+        notifPermission={notifPermission}
+        setNotifPermission={setNotifPermission}
+      />
 
       <section className="mt-8">
         <h2 className="text-sm font-medium uppercase tracking-wide text-ink-muted">Heatmap</h2>
@@ -239,5 +257,57 @@ export function AccountPage() {
         {deleteError && <p className="mt-1 text-xs text-amber-700">{deleteError}</p>}
       </section>
     </main>
+  );
+}
+
+// Both chimes and notifications are opt-in (muted/unasked by default) — see
+// the plan's locked-in decisions. requestPermission() must run from a real
+// click handler; browsers reject a programmatic call.
+function NotificationPrefs({
+  chimeEnabled,
+  setChimeEnabled,
+  notifPermission,
+  setNotifPermission,
+}: {
+  chimeEnabled: boolean;
+  setChimeEnabled: (enabled: boolean) => void;
+  notifPermission: NotificationPermission | "unsupported";
+  setNotifPermission: (p: NotificationPermission) => void;
+}) {
+  async function handleEnableNotifications(): Promise<void> {
+    if (typeof Notification === "undefined") return;
+    const result = await Notification.requestPermission();
+    setNotifPermission(result);
+  }
+
+  return (
+    <section className="mt-8 rounded-lg border border-line bg-surface p-4">
+      <h2 className="text-sm font-medium uppercase tracking-wide text-ink-muted">Notifications</h2>
+      <label className="mt-3 flex items-center justify-between gap-3 text-sm text-ink">
+        <span>Chime sounds on phase shifts</span>
+        <input
+          type="checkbox"
+          checked={chimeEnabled}
+          onChange={(e) => setChimeEnabled(e.target.checked)}
+          className="h-4 w-4"
+        />
+      </label>
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <span className="text-sm text-ink">
+          OS notifications for kudos &amp; whiteboard opens
+          {notifPermission === "granted" && <span className="ml-1 text-xs text-sage-dim">(enabled)</span>}
+          {notifPermission === "denied" && <span className="ml-1 text-xs text-amber-700">(blocked in browser settings)</span>}
+        </span>
+        {notifPermission !== "unsupported" && notifPermission !== "granted" && notifPermission !== "denied" && (
+          <button
+            type="button"
+            onClick={handleEnableNotifications}
+            className="shrink-0 rounded-md border border-ink px-3 py-1.5 text-xs font-medium text-ink"
+          >
+            Enable notifications
+          </button>
+        )}
+      </div>
+    </section>
   );
 }

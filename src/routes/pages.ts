@@ -17,6 +17,7 @@ import {
   listLocations,
   listStreaksForUser,
   requestBuddy,
+  setChimeEnabled,
 } from "../db.js";
 import { requireRealUser } from "../auth.js";
 import { parseLimit } from "../http.js";
@@ -44,7 +45,20 @@ export function pagesRouter(db: DatabaseSync, readmePath: string): Router {
       vfhCount: getVfhCount(db, req.user.id),
       isGuest: false,
       email: user?.email,
+      chimeEnabled: !!user?.chime_enabled,
     });
+  });
+
+  // Guests have no users row to persist this in (see isGuest) and fall back
+  // to localStorage entirely client-side — this endpoint is registered-users
+  // only, same posture as the other /api/me/* preference-shaped routes.
+  router.post("/api/me/prefs", requireRealUser, (req, res) => {
+    if (typeof req.body?.chimeEnabled !== "boolean") {
+      res.status(400).json({ error: "chimeEnabled must be a boolean" });
+      return;
+    }
+    setChimeEnabled(db, req.user!.id, req.body.chimeEnabled);
+    res.json({ ok: true });
   });
 
   router.get("/api/locations", (_req, res) => {

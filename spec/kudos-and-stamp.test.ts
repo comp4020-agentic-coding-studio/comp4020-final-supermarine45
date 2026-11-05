@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { io, type Socket } from "socket.io-client";
 import { expect, inject, it } from "vitest";
-import { TAB_HIDDEN_PENALTY_MS, TABLE_CYCLE_MS } from "../src/rooms.js";
+import { CHECKIN_GRACE_MS, TABLE_CYCLE_MS } from "../src/rooms.js";
 
 const baseUrl = inject("baseUrl");
 
@@ -154,6 +154,13 @@ it(
 
     const a = connect(aCookie);
     const b = connect(bCookie);
+    // This test holds both sockets connected through a full focus block into
+    // break — long enough for the server's own check-in pings to reach them
+    // (see tab-telemetry.test.ts). Answering them honestly keeps this test
+    // about kudos rejection/acceptance, not about the unrelated check-in
+    // demotion path (which has its own dedicated tests).
+    a.on("room:checkin-request", () => a.emit("room:checkin-confirm"));
+    b.on("room:checkin-request", () => b.emit("room:checkin-confirm"));
     try {
       await Promise.all([once(a, "connect"), once(b, "connect")]);
       a.emit("room:join", { slug, mode });
@@ -204,14 +211,14 @@ it(
   TABLE_CYCLE_MS * 2 + 30000,
 );
 
-// Ties together two mechanisms that only make sense in combination: the tab-
-// penalty demotion path (markTicketNotFullBlock, src/rooms.ts's
-// applyTabPenalty) and VFH's requirement of *both* stayed_full_block=1 and a
-// non-null stamp (getVfhCount). A demoted socket itself loses write access
-// (see tab-telemetry.test.ts), but nothing stops the same person from opening
-// a fresh connection and re-joining the same table before the cycle rolls
-// over — that second, non-demoted socket *can* stamp the very ticket the
-// first one left behind. This proves that stamping afterward still isn't
+// Ties together two mechanisms that only make sense in combination: the
+// check-in penalty demotion path (markTicketNotFullBlock, src/rooms.ts's
+// applyCheckinPenalty) and VFH's requirement of *both* stayed_full_block=1
+// and a non-null stamp (getVfhCount). A demoted socket itself loses write
+// access (see tab-telemetry.test.ts), but nothing stops the same person from
+// opening a fresh connection and re-joining the same table before the cycle
+// rolls over — that second, non-demoted socket *can* stamp the very ticket
+// the first one left behind. This proves that stamping afterward still isn't
 // enough: the ticket's stayed_full_block was already permanently flipped to 0
 // the moment the penalty fired, so the stamp alone can't resurrect the VFH.
 it(
@@ -242,14 +249,16 @@ it(
         };
         first.on("room:update", handler);
       });
-      first.emit("tab_hidden");
-      // Really wait out the server's own timer rather than faking it, same
-      // no-fake-timers convention as tab-telemetry.test.ts. This only proves
-      // what it means to prove if the demotion fires while the table is
-      // still mid-focus — CI (and this file's own local verification) sets
-      // TAB_HIDDEN_PENALTY_MS comfortably shorter than the focus block for
-      // exactly this reason; see checks.yml's comment.
-      await withTimeout(residentGone, TAB_HIDDEN_PENALTY_MS + 10000, "roster to drop the demoted user");
+      // No tab_hidden event exists anymore (micro check-ins replace
+      // tab-visibility tracking) — never confirming a check-in ping leaves
+      // the grace timeout to demote on its own. Really wait out the server's
+      // own timer rather than faking it, same no-fake-timers convention as
+      // tab-telemetry.test.ts. This only proves what it means to prove if the
+      // demotion fires while the table is still mid-focus — CI (and this
+      // file's own local verification) sets CHECKIN_GRACE_MS comfortably
+      // shorter than the focus block for exactly this reason; see
+      // checks.yml's comment.
+      await withTimeout(residentGone, CHECKIN_GRACE_MS + TABLE_CYCLE_MS + 10000, "roster to drop the demoted user");
     } finally {
       first.close();
     }
@@ -287,5 +296,5 @@ it(
     const me = await getMe(returnCookie);
     expect(me.vfhCount).toBe(0);
   },
-  TABLE_CYCLE_MS * 2 + TAB_HIDDEN_PENALTY_MS + 30000,
+  TABLE_CYCLE_MS * 2 + CHECKIN_GRACE_MS + 30000,
 );

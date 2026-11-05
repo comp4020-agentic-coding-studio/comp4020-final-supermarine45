@@ -128,6 +128,12 @@ it(
     const a = connect(aCookie);
     const b = connect(bCookie);
     const shadow = connect();
+    // a and b stay connected through a full focus block into break, long
+    // enough for the server's own check-in pings to reach them (see
+    // tab-telemetry.test.ts) — answering honestly keeps this test about log
+    // content, not the unrelated check-in demotion path.
+    a.on("room:checkin-request", () => a.emit("room:checkin-confirm"));
+    b.on("room:checkin-request", () => b.emit("room:checkin-confirm"));
     try {
       await Promise.all([once(a, "connect"), once(b, "connect"), once(shadow, "connect")]);
 
