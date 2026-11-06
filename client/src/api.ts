@@ -7,6 +7,7 @@ import type {
   HubStatsEntry,
   LobbyLocation,
   LocationHistoryEntry,
+  LocationStats,
   Me,
   ScheduledSession,
   StreakEntry,
@@ -63,6 +64,10 @@ export function getHistory(limit = 20): Promise<{ history: UserHistoryEntry[] }>
 
 export function getLocationHistory(slug: string, limit = 20): Promise<{ history: LocationHistoryEntry[] }> {
   return getJson(`/api/locations/${slug}/history?limit=${limit}`);
+}
+
+export function getLocationStats(slug: string): Promise<LocationStats> {
+  return getJson(`/api/locations/${slug}/stats`);
 }
 
 export function getBuddies(): Promise<{ buddies: Buddy[] }> {

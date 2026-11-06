@@ -30,7 +30,7 @@ export function CheckInModal({ deadlineAt, onConfirm }: { deadlineAt: number; on
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        className="w-full max-w-sm rounded-xl bg-espresso p-6 text-center text-cream shadow-2xl"
+        className="w-full max-w-sm rounded-2xl bg-espresso p-6 text-center text-cream shadow-[var(--shadow-notion-lg)]"
       >
         <h2 className="font-mono text-lg">Still here?</h2>
         <p className="mt-1 text-sm text-cream/70">

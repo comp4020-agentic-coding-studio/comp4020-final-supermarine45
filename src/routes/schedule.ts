@@ -7,6 +7,7 @@ import {
   deleteScheduledSession,
   getLocationBySlug,
   getLocationSessionHistory,
+  getLocationStats,
   listUpcomingSessions,
   listUpcomingSessionsForUser,
 } from "../db.js";
@@ -44,6 +45,16 @@ export function scheduleRouter(db: DatabaseSync, io: Server): Router {
     }
     const limit = parseLimit(req.query.limit, 20, 100);
     res.json({ history: getLocationSessionHistory(db, location.id, limit) });
+  });
+
+  // Library Stats block (RoomPage) — same public, no-auth posture as /history.
+  router.get("/api/locations/:slug/stats", (req, res) => {
+    const location = getLocationBySlug(db, req.params.slug as string);
+    if (!location) {
+      res.status(404).json({ error: "unknown location" });
+      return;
+    }
+    res.json(getLocationStats(db, location.id));
   });
 
   // The one place that answers "what have I actually booked", across every

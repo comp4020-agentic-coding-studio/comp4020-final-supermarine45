@@ -1,9 +1,10 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Source+Serif+4:wght@400;600&display=swap");
 @import "tailwindcss";
 
 @theme {
   --font-sans: "Inter", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+  --font-serif: "Source Serif 4", Georgia, serif;
 
   --color-paper: #f7f6f2;
   --color-charcoal: #1f1d1a;
@@ -38,6 +39,26 @@
   --color-line: rgba(0, 0, 0, 0.1);
   --color-line-soft: rgba(0, 0, 0, 0.05);
   --color-track: rgba(0, 0, 0, 0.08);
+  --color-accent: #2383e2;
+  --color-accent-tint: #e7f3fc;
+
+  /* Notion-style near-imperceptible layered shadows — chrome cards/panels only. */
+  --shadow-notion-sm: 0 1px 1px rgba(15, 15, 15, 0.03), 0 0 0 1px rgba(15, 15, 15, 0.045);
+  --shadow-notion-md: 0 1px 3px rgba(15, 15, 15, 0.06), 0 4px 12px rgba(15, 15, 15, 0.05), 0 0 0 1px rgba(15, 15, 15, 0.04);
+  --shadow-notion-lg: 0 2px 6px rgba(15, 15, 15, 0.08), 0 12px 32px rgba(15, 15, 15, 0.08);
+
+  /* Callout block palette (Notion's named colors, 5 of 10 adopted) — used only
+     by Callout.tsx, never spread elsewhere. */
+  --color-callout-gray-bg: #f1f1ef;
+  --color-callout-gray-text: #787774;
+  --color-callout-blue-bg: #e7f3f8;
+  --color-callout-blue-text: #0b6e99;
+  --color-callout-yellow-bg: #fbf3db;
+  --color-callout-yellow-text: #9f6b00;
+  --color-callout-red-bg: #fbe4e4;
+  --color-callout-red-text: #c4554d;
+  --color-callout-purple-bg: #f0e8f7;
+  --color-callout-purple-text: #9065b0;
 
   --animate-fade-in: fade-in 0.4s ease-out;
 
@@ -60,6 +81,19 @@
   --color-line: rgba(255, 255, 255, 0.12);
   --color-line-soft: rgba(255, 255, 255, 0.07);
   --color-track: rgba(255, 255, 255, 0.14);
+  --color-accent: #529cca;
+  --color-accent-tint: rgba(82, 156, 202, 0.15);
+
+  --color-callout-gray-bg: rgba(255, 255, 255, 0.055);
+  --color-callout-gray-text: #9b9a97;
+  --color-callout-blue-bg: rgba(35, 131, 226, 0.15);
+  --color-callout-blue-text: #529cca;
+  --color-callout-yellow-bg: rgba(203, 145, 47, 0.15);
+  --color-callout-yellow-text: #cb9a2d;
+  --color-callout-red-bg: rgba(255, 115, 105, 0.15);
+  --color-callout-red-text: #ff7369;
+  --color-callout-purple-bg: rgba(154, 109, 215, 0.15);
+  --color-callout-purple-text: #9a6cd7;
 }
 
 html,

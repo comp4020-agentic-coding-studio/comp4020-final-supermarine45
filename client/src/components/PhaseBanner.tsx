@@ -31,7 +31,7 @@ export function PhaseBanner({ timer, now }: { timer: TimerPayload; now: number }
     <motion.div
       animate={{ backgroundColor: isBreak ? "#1c1917" : timer.status === "focus" ? "#000000" : "#1f1d1a" }}
       transition={{ duration: 0.8 }}
-      className={`relative overflow-hidden rounded-xl p-8 text-center ${bg}`}
+      className={`relative overflow-hidden rounded-2xl p-8 text-center ${bg}`}
     >
       <AnimatePresence mode="wait">
         <motion.p

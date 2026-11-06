@@ -27,14 +27,14 @@ export function HeatmapGrid({ days }: { days: HeatmapEntry[] }) {
 
   return (
     <div
-      className="grid gap-[3px] overflow-x-auto py-1"
+      className="grid gap-[4px] overflow-x-auto py-1"
       style={{ gridTemplateRows: "repeat(7, 10px)", gridAutoFlow: "column", gridAutoColumns: "10px" }}
     >
       {cells.map((cell, i) => (
         <div
           key={i}
           title={cell.date ? `${cell.date}: ${cell.count} VFH` : undefined}
-          className="rounded-[2px]"
+          className="rounded-[3px]"
           style={{ background: cell.date ? colorFor(cell.count) : "transparent" }}
         />
       ))}

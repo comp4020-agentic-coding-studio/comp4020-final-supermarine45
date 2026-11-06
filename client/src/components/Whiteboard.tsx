@@ -57,7 +57,7 @@ export function Whiteboard({
 
   if (!whiteboardOpenedAt) {
     return (
-      <div className="rounded-lg border border-sage/30 bg-white/5 p-4 text-center text-white">
+      <div className="rounded-xl border border-sage/30 bg-white/5 p-4 text-center text-white">
         <button
           type="button"
           onClick={onLaunch}
@@ -119,7 +119,7 @@ export function Whiteboard({
   );
 
   return (
-    <div className="rounded-lg border border-sage/30 bg-white/5 p-4 text-white">
+    <div className="rounded-xl border border-sage/30 bg-white/5 p-4 text-white">
       <h2 className="font-mono text-xs uppercase tracking-widest text-sage">Breakout whiteboard</h2>
       <div className="relative mt-2 h-40" onMouseMove={handleMouseMove}>
         <div

@@ -48,6 +48,10 @@ export interface RoomState {
   phaseStartedAt: number | null;
   phaseEndAt: number | null;
   durationMs: number | null;
+  // Lifetime count of focus blocks that resolved with at least one ticket at
+  // this (location, mode) table — "rolled over" in the Library Stats sense,
+  // bumped once per cycle in endFocus (src/rooms.ts). Never reset.
+  lastActiveRollovers: number;
 }
 
 export interface ScheduledSession {
@@ -64,7 +68,7 @@ export interface UpcomingSessionForUser {
   startsAt: number;
 }
 
-export type TicketStamp = "completed" | "partial";
+export type TicketStamp = "completed" | "partial" | "pivoted";
 
 export interface Ticket {
   id: number;
@@ -86,6 +90,17 @@ export interface Ticket {
   stuckAt: number | null;
   stamp: TicketStamp | null;
   stayedFullBlock: boolean;
+  // Set the first time this ticket is pivoted (room:pivot-ticket); null for a
+  // ticket that's never been pivoted. Drives both whether room:stamp-ticket
+  // will accept stamp:"pivoted" and whether the Break Modal even offers that
+  // button — see rooms.ts's room:pivot-ticket/room:stamp-ticket handlers.
+  pivotedAt: number | null;
+  // Null means the full table-wide FOCUS_DURATION_MS block (the default).
+  // Set at board time (room:submit-ticket) to a shorter personal block the
+  // user chose for themselves — this never changes the shared table timer
+  // every other member sees, only what this one ticket's own progress
+  // ring/nudge is measured against. See rooms.ts's PERSONAL_DURATION_PRESETS_MIN.
+  personalDurationMs: number | null;
   createdAt: number;
 }
 
@@ -477,6 +492,14 @@ function migrate(db: DatabaseSync): void {
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (email)");
   ensureColumn(db, "tickets", "stuck_at", "stuck_at INTEGER");
   ensureColumn(db, "users", "chime_enabled", "chime_enabled INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "tickets", "pivoted_at", "pivoted_at INTEGER");
+  ensureColumn(
+    db,
+    "room_state",
+    "last_active_rollovers",
+    "last_active_rollovers INTEGER NOT NULL DEFAULT 0",
+  );
+  ensureColumn(db, "tickets", "personal_duration_ms", "personal_duration_ms INTEGER");
 }
 
 // Insert-or-ignore per (slug, mode), rather than bailing out once any row
@@ -549,7 +572,8 @@ export function getLocationById(db: DatabaseSync, id: number): Location | undefi
 
 const ROOM_STATE_COLUMNS =
   "location_id AS locationId, activity_mode AS activityMode, status, " +
-  "phase_started_at AS phaseStartedAt, phase_end_at AS phaseEndAt, duration_ms AS durationMs";
+  "phase_started_at AS phaseStartedAt, phase_end_at AS phaseEndAt, duration_ms AS durationMs, " +
+  "last_active_rollovers AS lastActiveRollovers";
 
 // Plain select, assumes the row exists — safe because seed() eagerly creates
 // every (location, mode) pair at boot (104 rows today: 26 hubs × 4 modes),
@@ -589,6 +613,17 @@ export function setTableState(
     "UPDATE room_state SET status = ?, phase_started_at = ?, phase_end_at = ?, duration_ms = ? " +
       "WHERE location_id = ? AND activity_mode = ?",
   ).run(status, phaseStartedAt, phaseEndAt, durationMs, locationId, mode);
+}
+
+// Bumps the Library Stats "rolled over N times" counter — called once per
+// focus block that resolves (rooms.ts's endFocus), which by construction only
+// ever runs for a block that had at least one boarded ticket (beginScheduledFocus
+// never transitions an empty cycle into focus), so no extra guard is needed here.
+export function incrementTableRollovers(db: DatabaseSync, locationId: number, mode: ActivityMode): void {
+  db.prepare(
+    "UPDATE room_state SET last_active_rollovers = last_active_rollovers + 1 " +
+      "WHERE location_id = ? AND activity_mode = ?",
+  ).run(locationId, mode);
 }
 
 export function createScheduledSession(
@@ -657,7 +692,8 @@ export function randomEncouragement(db: DatabaseSync): string | undefined {
 const TICKET_COLUMNS =
   "id, location_id AS locationId, activity_mode AS activityMode, user_id AS userId, username, " +
   "cycle_start_at AS cycleStartAt, body, stuck, stuck_at AS stuckAt, stamp, " +
-  "stayed_full_block AS stayedFullBlock, created_at AS createdAt";
+  "stayed_full_block AS stayedFullBlock, pivoted_at AS pivotedAt, " +
+  "personal_duration_ms AS personalDurationMs, created_at AS createdAt";
 
 type TicketRow = Omit<Ticket, "stuck" | "stayedFullBlock"> & { stuck: number; stayedFullBlock: number };
 
@@ -669,6 +705,10 @@ function toTicket(row: TicketRow): Ticket {
 // cycle's ticket body (and refreshes username, in case a real user renamed
 // since) in place — stuck/stamp/stayedFullBlock are untouched by the DO
 // UPDATE, so editing a ticket never resets flags already set on it.
+// personalDurationMs is re-applied on every submit (like body) since it's
+// chosen alongside the body on the same board-time form — null means the
+// full shared TABLE_CYCLE_MS-derived block, never a change to that shared
+// timer itself (see rooms.ts's room:submit-ticket).
 export function upsertTicket(
   db: DatabaseSync,
   locationId: number,
@@ -677,13 +717,14 @@ export function upsertTicket(
   username: string,
   cycleStartAt: number,
   body: string,
+  personalDurationMs: number | null = null,
 ): void {
   db.prepare(
-    "INSERT INTO tickets (location_id, activity_mode, user_id, username, cycle_start_at, body, created_at) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?) " +
+    "INSERT INTO tickets (location_id, activity_mode, user_id, username, cycle_start_at, body, personal_duration_ms, created_at) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
       "ON CONFLICT(location_id, activity_mode, user_id, cycle_start_at) " +
-      "DO UPDATE SET body = excluded.body, username = excluded.username",
-  ).run(locationId, mode, userId, username, cycleStartAt, body, Date.now());
+      "DO UPDATE SET body = excluded.body, username = excluded.username, personal_duration_ms = excluded.personal_duration_ms",
+  ).run(locationId, mode, userId, username, cycleStartAt, body, personalDurationMs, Date.now());
 }
 
 export function getTicket(
@@ -782,6 +823,24 @@ export function stampTicket(
   db.prepare(
     "UPDATE tickets SET stamp = ? WHERE location_id = ? AND activity_mode = ? AND user_id = ? AND cycle_start_at = ?",
   ).run(stamp, locationId, mode, userId, cycleStartAt);
+}
+
+// Rewrites a ticket's body mid-focus (Pivot Goal) and stamps pivoted_at the
+// first time this happens — pivoted_at, once set, never clears, since it
+// exists purely to answer "was this ticket ever pivoted" for room:stamp-ticket
+// and the Break Modal's third button.
+export function pivotTicket(
+  db: DatabaseSync,
+  locationId: number,
+  mode: ActivityMode,
+  userId: number,
+  cycleStartAt: number,
+  body: string,
+): void {
+  db.prepare(
+    "UPDATE tickets SET body = ?, pivoted_at = COALESCE(pivoted_at, ?) " +
+      "WHERE location_id = ? AND activity_mode = ? AND user_id = ? AND cycle_start_at = ?",
+  ).run(body, Date.now(), locationId, mode, userId, cycleStartAt);
 }
 
 // Called from the tab-penalty demotion path (rooms.ts) so a user demoted
@@ -941,6 +1000,33 @@ export function getLocationSessionHistory(db: DatabaseSync, locationId: number, 
     )
     .all(locationId, limit) as unknown as (Omit<LocationHistoryEntry, "stayedFullBlock"> & { stayedFullBlock: number })[];
   return rows.map((r) => ({ ...r, stayedFullBlock: !!r.stayedFullBlock }));
+}
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface LocationStats {
+  vfhThisWeek: number;
+  lastActiveRollovers: number;
+}
+
+// Library Stats block (RoomPage) — aggregates VFH across every mode/table at
+// this location, same "stamp IS NOT NULL AND stayed_full_block = 1" predicate
+// the heatmap/diet/hub-stats queries already use, which is why a "pivoted"
+// stamp counts here automatically (Decision: Pivoted counts like Completed).
+// lastActiveRollovers sums each mode's table-level counter since "last active
+// table rolled over N times" isn't scoped to one mode in the feature request.
+export function getLocationStats(db: DatabaseSync, locationId: number): LocationStats {
+  const sinceEpochMs = Date.now() - WEEK_MS;
+  const { count } = db
+    .prepare(
+      "SELECT COUNT(*) AS count FROM tickets WHERE location_id = ? AND stamp IS NOT NULL " +
+        "AND stayed_full_block = 1 AND cycle_start_at >= ?",
+    )
+    .get(locationId, sinceEpochMs) as { count: number };
+  const { total } = db
+    .prepare("SELECT COALESCE(SUM(last_active_rollovers), 0) AS total FROM room_state WHERE location_id = ?")
+    .get(locationId) as { total: number };
+  return { vfhThisWeek: count, lastActiveRollovers: total };
 }
 
 // --- buddies ---

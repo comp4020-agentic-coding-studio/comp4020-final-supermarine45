@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { KUDOS_EMOJI, type ActivityMode, type Ticket, type TicketWithKudos } from "../types";
 import { KudosButton } from "./KudosButton";
 import { TicketForm } from "./TicketForm";
+import { Callout } from "./Callout";
 
 // Self-Regulated Learning reflection prompts — static client-only copy, no
 // server round-trip (plan §2: "90s mode-specific SSRL reflection prompt").
@@ -30,9 +31,9 @@ export function BreakModal({
   myTicket: Ticket | null;
   tickets: TicketWithKudos[];
   myUserId: number | undefined;
-  onStamp: (stamp: "completed" | "partial") => void;
+  onStamp: (stamp: "completed" | "partial" | "pivoted") => void;
   onSendKudos: (toUserId: number, emoji: string) => void;
-  onReboard: (body: string) => void;
+  onReboard: (body: string, personalDurationMinutes?: number) => void;
   onLeave: () => void;
   // The server can't address the *next* cycle until the table actually goes
   // idle (see TablePage), so a reboard made here is queued, not submitted
@@ -64,7 +65,7 @@ export function BreakModal({
       <motion.div
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        className="w-full max-w-md rounded-xl bg-espresso p-6 text-cream shadow-2xl"
+        className="w-full max-w-md rounded-2xl bg-espresso p-6 text-cream shadow-[var(--shadow-notion-lg)]"
       >
         <div className="mb-4 flex justify-center gap-1.5">
           {(["stamp", "reflect", "kudos"] as Card[]).map((c) => (
@@ -105,6 +106,18 @@ export function BreakModal({
                   Partial progress
                 </button>
               </div>
+              {myTicket?.pivotedAt != null && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onStamp("pivoted");
+                    setCard("reflect");
+                  }}
+                  className="mt-2 w-full rounded-md border border-violet-400/40 bg-violet-400/10 px-4 py-2 text-sm font-medium text-violet-300"
+                >
+                  Pivoted &mdash; finished the new goal
+                </button>
+              )}
             </motion.div>
           )}
 
@@ -117,8 +130,12 @@ export function BreakModal({
               transition={{ duration: 0.3 }}
             >
               <h2 className="font-mono text-lg">A moment to reflect</h2>
-              <p className="mt-2 text-xs uppercase tracking-wide text-cream/50">The room asks&hellip;</p>
-              <p className="mt-1 text-sm text-cream/80">{SSRL_PROMPT[mode]}</p>
+              <div className="mt-3">
+                <Callout tone="yellow" dark>
+                  <p className="text-xs uppercase tracking-wide opacity-70">The room asks&hellip;</p>
+                  <p className="mt-1 text-sm">{SSRL_PROMPT[mode]}</p>
+                </Callout>
+              </div>
               <div className="mt-4 h-1 overflow-hidden rounded-full bg-white/10">
                 <div
                   className="h-full bg-terracotta transition-[width] duration-1000 ease-linear"

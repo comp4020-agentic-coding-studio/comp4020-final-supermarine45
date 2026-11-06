@@ -4,7 +4,7 @@ function monogram(name: string): string {
   return name.slice(0, 2).toUpperCase();
 }
 
-function hueFor(name: string): number {
+export function hueFor(name: string): number {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
   return h % 360;

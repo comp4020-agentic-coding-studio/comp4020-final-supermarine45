@@ -48,7 +48,8 @@ export function BuildingPage() {
       <Link to="/" className="text-sm text-ink-muted underline">
         &larr; all buildings
       </Link>
-      <h1 className="mt-2 font-mono text-3xl font-semibold tracking-tight text-ink">
+      <div className="mt-4 h-20 rounded-2xl bg-gradient-to-br from-accent-tint to-surface" />
+      <h1 className="mt-4 font-sans text-[32px] font-semibold tracking-tight text-ink">
         {buildingName ?? "Loading…"}
       </h1>
       <p className="mt-2 text-sm text-ink-muted">Pick a room. Join who's already there.</p>
@@ -66,7 +67,7 @@ export function BuildingPage() {
             <motion.div key={room.slug} variants={cardVariants} whileHover={{ y: -2 }} whileTap={{ scale: 0.98 }}>
               <Link
                 to={`/room/${room.slug}`}
-                className="block h-full rounded-xl border border-line bg-surface p-5 shadow-sm transition hover:shadow-md hover:ring-1 hover:ring-anu-gold/40"
+                className="block h-full rounded-xl border border-line bg-surface p-5 shadow-[var(--shadow-notion-sm)] transition hover:-translate-y-0.5 hover:shadow-[var(--shadow-notion-md)]"
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="flex items-center gap-2.5 font-medium text-ink">

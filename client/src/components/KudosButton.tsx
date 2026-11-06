@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import { KUDOS_ICON } from "./kudosIcons";
 
 export function KudosButton({
   emoji,
@@ -13,6 +14,7 @@ export function KudosButton({
   onSend: () => void;
 }) {
   const [burst, setBurst] = useState(0);
+  const Icon = KUDOS_ICON[emoji as keyof typeof KUDOS_ICON];
 
   function handleClick(): void {
     if (disabled || given) return;
@@ -26,12 +28,16 @@ export function KudosButton({
         type="button"
         onClick={handleClick}
         disabled={disabled || given}
-        className={`flex h-9 w-9 items-center justify-center rounded-full border text-lg transition ${
-          given ? "border-sage bg-sage/10" : "border-black/15 bg-white hover:scale-110"
+        className={`flex h-9 w-9 items-center justify-center rounded-full border transition ${
+          // The "not given" state is a literal white "paper" circle regardless
+          // of chrome theme (same convention as TicketForm/TableDashboard) —
+          // the icon/emoji needs an explicit dark color rather than inheriting
+          // text-ink, which goes light in dark chrome mode and disappears here.
+          given ? "border-sage bg-sage/10 text-sage" : "border-black/15 bg-white text-charcoal hover:scale-110"
         } disabled:cursor-default disabled:opacity-60`}
         aria-label={`send ${emoji} kudos`}
       >
-        {emoji}
+        {Icon ? <Icon size={16} strokeWidth={1.5} /> : emoji}
       </button>
       <AnimatePresence>
         {burst > 0 && (
@@ -47,7 +53,7 @@ export function KudosButton({
               return (
                 <motion.span
                   key={i}
-                  className="absolute text-xs"
+                  className="absolute"
                   initial={{ x: 0, y: 0, opacity: 1, scale: 1 }}
                   animate={{
                     x: Math.cos(angle) * 24,
@@ -58,7 +64,7 @@ export function KudosButton({
                   transition={{ duration: 0.5, ease: "easeOut" }}
                   onAnimationComplete={() => setBurst(0)}
                 >
-                  {emoji}
+                  {Icon ? <Icon size={12} strokeWidth={1.5} /> : emoji}
                 </motion.span>
               );
             })}

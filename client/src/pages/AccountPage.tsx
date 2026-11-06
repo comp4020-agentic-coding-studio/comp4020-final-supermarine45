@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Flame } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/useAuth";
 import { useChimePreference } from "../hooks/useChimePreference";
@@ -17,8 +18,14 @@ import {
 import { HeatmapGrid } from "../components/HeatmapGrid";
 import { DonutChart } from "../components/DonutChart";
 import { OutcomeBadge } from "../components/OutcomeBadge";
-import { FlameIcon, ModeIcon } from "../components/icons";
+import { Button } from "../components/Button";
+import { Divider } from "../components/Divider";
+import { Disclosure } from "../components/Disclosure";
+import { ModeIcon } from "../components/icons";
 import type { Buddy, BuddyFeedEntry, HeatmapEntry, StreakEntry, UserHistoryEntry } from "../types";
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const RECENT_SESSIONS_SHOWN = 5;
 
 export function AccountPage() {
   const { me, refresh } = useAuth();
@@ -87,7 +94,7 @@ export function AccountPage() {
   if (me.isGuest) {
     return (
       <main className="mx-auto max-w-5xl px-6 py-10">
-        <h1 className="font-mono text-2xl font-semibold text-ink">{me.username}</h1>
+        <h1 className="font-sans text-[32px] font-semibold tracking-tight text-ink">{me.username}</h1>
         <p className="mt-2 text-sm text-ink-muted">
           Anonymous guest &mdash; there's nothing to manage here, and nothing is saved when you leave.
         </p>
@@ -103,94 +110,117 @@ export function AccountPage() {
 
   const pendingForMe = buddies.filter((b) => b.status === "pending" && b.addresseeId === me.id);
   const accepted = buddies.filter((b) => b.status === "accepted");
+  const currentStreak = streaks.reduce((max, s) => Math.max(max, s.currentStreak), 0);
+  const sessionsThisWeek = history.filter((h) => Date.now() - h.cycleStartAt < WEEK_MS).length;
+  const recentSessions = history.slice(0, RECENT_SESSIONS_SHOWN);
+  const olderSessions = history.slice(RECENT_SESSIONS_SHOWN);
+  const completedCount = history.filter((h) => h.stamp !== null && h.stayedFullBlock).length;
+  const notCompletedCount = history.filter((h) => h.stamp === null && h.stayedFullBlock).length;
 
   return (
     <main className="mx-auto max-w-5xl px-6 py-10">
-      <h1 className="font-mono text-2xl font-semibold text-ink">{me.username}</h1>
+      <h1 className="font-sans text-[32px] font-semibold tracking-tight text-ink">{me.username}</h1>
       <p className="mt-1 text-sm text-ink-muted">{me.email}</p>
-      <p className="mt-3 font-mono text-3xl text-amber-700">
-        {me.vfhCount ?? 0} <span className="text-base text-ink-muted">Verified Focus Hours</span>
-      </p>
 
-      <NotificationPrefs
-        chimeEnabled={chimeEnabled}
-        setChimeEnabled={setChimeEnabled}
-        notifPermission={notifPermission}
-        setNotifPermission={setNotifPermission}
-      />
+      {/* Pinned properties — the headline numbers, up front, database-style. */}
+      <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="Verified Focus Hours" value={me.vfhCount ?? 0} />
+        <StatCard label="Current streak" value={currentStreak} />
+        <StatCard label="Sessions this week" value={sessionsThisWeek} />
+        <StatCard label="Buddies" value={accepted.length} />
+      </div>
 
-      <section className="mt-8">
-        <h2 className="text-sm font-medium uppercase tracking-wide text-ink-muted">Heatmap</h2>
-        <div className="mt-2">
-          <HeatmapGrid days={heatmap} />
-        </div>
-      </section>
+      <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-[2fr_1fr]">
+        <div className="min-w-0 space-y-8">
+          <section>
+            <h2 className="font-sans text-xl font-semibold text-ink">Heatmap</h2>
+            <div className="mt-2">
+              <HeatmapGrid days={heatmap} />
+            </div>
+          </section>
 
-      {streaks.length > 0 && (
-        <section className="mt-8">
-          <h2 className="text-sm font-medium uppercase tracking-wide text-ink-muted">Streaks</h2>
-          <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {streaks.map((s) => (
-              <div
-                key={`${s.locationName}-${s.activityMode}`}
-                className="flex items-center gap-3 rounded-lg border border-line bg-surface p-3"
-              >
-                <FlameIcon className="shrink-0 text-xl text-amber-600" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-ink">
-                    {s.locationName} &middot; {s.activityMode}
-                  </p>
-                  <p className="text-xs text-ink-muted">
-                    {s.currentStreak} current &middot; {s.longestStreak} longest
-                  </p>
+          <section>
+            <h2 className="font-sans text-xl font-semibold text-ink">Recent sessions</h2>
+            {history.length === 0 ? (
+              <p className="mt-2 text-sm text-ink-muted">No sessions logged yet.</p>
+            ) : (
+              <>
+                <p className="mt-1 text-xs text-ink-muted">
+                  {completedCount} completed &middot; {notCompletedCount} not completed
+                </p>
+                <div className="mt-2 space-y-2">
+                  {recentSessions.map((h) => (
+                    <SessionRow key={h.ticketId} entry={h} />
+                  ))}
                 </div>
+                {olderSessions.length > 0 && (
+                  <div className="mt-3">
+                    <Disclosure label={`Show ${olderSessions.length} more`}>
+                      <div className="space-y-2">
+                        {olderSessions.map((h) => (
+                          <SessionRow key={h.ticketId} entry={h} />
+                        ))}
+                      </div>
+                    </Disclosure>
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+        </div>
+
+        <div className="space-y-8">
+          {streaks.length > 0 && (
+            <section>
+              <h3 className="font-sans text-sm font-semibold uppercase tracking-wide text-ink-muted">Streaks</h3>
+              <div className="mt-2 space-y-2">
+                {streaks.map((s) => (
+                  <div
+                    key={`${s.locationName}-${s.activityMode}`}
+                    className="flex items-center gap-3 rounded-xl border border-line bg-surface p-3"
+                  >
+                    <Flame size={20} strokeWidth={1.5} className="shrink-0 text-amber-600" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-ink">
+                        {s.locationName} &middot; {s.activityMode}
+                      </p>
+                      <p className="text-xs text-ink-muted">
+                        {s.currentStreak} current &middot; {s.longestStreak} longest
+                      </p>
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </section>
-      )}
+            </section>
+          )}
 
-      <section className="mt-8">
-        <h2 className="text-sm font-medium uppercase tracking-wide text-ink-muted">Recent sessions</h2>
-        {history.length === 0 ? (
-          <p className="mt-2 text-sm text-ink-muted">No sessions logged yet.</p>
-        ) : (
-          <div className="mt-2 space-y-2">
-            {history.map((h) => (
-              <Link
-                key={h.ticketId}
-                to={`/room/${h.locationSlug}`}
-                className="flex items-center gap-3 rounded-lg border border-line bg-surface p-3 transition hover:shadow-sm"
-              >
-                <ModeIcon mode={h.activityMode} className="shrink-0 text-lg text-ink-muted" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium text-ink">{h.locationName}</p>
-                  <p className="truncate font-mono text-xs text-ink-muted">"{h.body}"</p>
-                </div>
-                <OutcomeBadge stamp={h.stamp} stayedFullBlock={h.stayedFullBlock} />
-              </Link>
-            ))}
-          </div>
-        )}
-      </section>
+          <section>
+            <h3 className="font-sans text-sm font-semibold uppercase tracking-wide text-ink-muted">Cognitive diet</h3>
+            <div className="mt-2">
+              <DonutChart entries={diet} />
+            </div>
+          </section>
 
-      <section className="mt-8 grid grid-cols-1 gap-6 sm:grid-cols-2">
-        <div>
-          <h2 className="text-sm font-medium uppercase tracking-wide text-ink-muted">Cognitive diet</h2>
-          <div className="mt-2">
-            <DonutChart entries={diet} />
-          </div>
+          <section>
+            <h3 className="font-sans text-sm font-semibold uppercase tracking-wide text-ink-muted">Hubs</h3>
+            <div className="mt-2">
+              <DonutChart entries={hubs} />
+            </div>
+          </section>
+
+          <NotificationPrefs
+            chimeEnabled={chimeEnabled}
+            setChimeEnabled={setChimeEnabled}
+            notifPermission={notifPermission}
+            setNotifPermission={setNotifPermission}
+          />
         </div>
-        <div>
-          <h2 className="text-sm font-medium uppercase tracking-wide text-ink-muted">Hubs</h2>
-          <div className="mt-2">
-            <DonutChart entries={hubs} />
-          </div>
-        </div>
-      </section>
+      </div>
 
-      <section className="mt-8">
-        <h2 className="text-sm font-medium uppercase tracking-wide text-ink-muted">Buddies</h2>
+      <Divider />
+
+      <section>
+        <h2 className="font-sans text-xl font-semibold text-ink">Buddies</h2>
         {pendingForMe.length > 0 && (
           <div className="mt-2 space-y-1">
             {pendingForMe.map((b) => (
@@ -217,38 +247,43 @@ export function AccountPage() {
             value={buddyIdInput}
             onChange={(e) => setBuddyIdInput(e.target.value)}
             placeholder="user id"
-            className="w-28 rounded border border-line bg-surface px-2 py-1 text-sm text-ink"
+            className="w-28 rounded-md border border-line bg-surface px-2 py-1 text-sm text-ink outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
           />
-          <button type="submit" className="rounded-md border border-ink px-3 py-1.5 text-sm font-medium text-ink">
+          <Button type="submit" variant="secondary" size="sm">
             Send buddy request
-          </button>
+          </Button>
         </form>
         {buddyError && <p className="mt-1 text-xs text-amber-700">{buddyError}</p>}
 
-        <h3 className="mt-5 text-xs font-medium uppercase tracking-wide text-ink-muted">Buddy feed</h3>
-        <div className="mt-2 space-y-2">
-          {feed.length === 0 && <p className="text-sm text-ink-muted">Nothing from your buddies yet.</p>}
-          {feed.map((f) => (
-            <div key={f.ticketId} className="rounded-md border border-line px-3 py-2 text-sm text-ink">
-              <span className="font-medium">{f.username}</span>{" "}
-              <span className="text-ink-muted">
-                at {f.locationName} &middot; {f.activityMode}
-              </span>
-              <p className="mt-1 font-mono text-xs opacity-80">"{f.body}"</p>
+        <div className="mt-5">
+          <Disclosure label="Buddy feed">
+            <div className="space-y-2">
+              {feed.length === 0 && <p className="text-sm text-ink-muted">Nothing from your buddies yet.</p>}
+              {feed.map((f) => (
+                <div key={f.ticketId} className="rounded-md border border-line px-3 py-2 text-sm text-ink">
+                  <span className="font-medium">{f.username}</span>{" "}
+                  <span className="text-ink-muted">
+                    at {f.locationName} &middot; {f.activityMode}
+                  </span>
+                  <p className="mt-1 font-mono text-xs opacity-80">"{f.body}"</p>
+                </div>
+              ))}
             </div>
-          ))}
+          </Disclosure>
         </div>
       </section>
 
-      <section className="mt-10 border-t border-line pt-6">
-        <h2 className="text-sm font-medium uppercase tracking-wide text-amber-700">Danger zone</h2>
+      <Divider />
+
+      <section>
+        <h3 className="font-sans text-sm font-semibold uppercase tracking-wide text-amber-700">Danger zone</h3>
         <form onSubmit={handleDelete} className="mt-2 flex items-center gap-2">
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="confirm password"
-            className="rounded border border-line bg-surface px-2 py-1 text-sm text-ink"
+            className="rounded-md border border-line bg-surface px-2 py-1 text-sm text-ink outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
           />
           <button type="submit" className="rounded-md border border-amber-700 px-3 py-1.5 text-sm font-medium text-amber-700">
             Delete account
@@ -257,6 +292,31 @@ export function AccountPage() {
         {deleteError && <p className="mt-1 text-xs text-amber-700">{deleteError}</p>}
       </section>
     </main>
+  );
+}
+
+function StatCard({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-xl border border-line bg-surface p-3">
+      <p className="font-sans text-xs font-medium uppercase tracking-wide text-ink-muted">{label}</p>
+      <p className="mt-1 font-mono text-2xl text-ink">{value}</p>
+    </div>
+  );
+}
+
+function SessionRow({ entry: h }: { entry: UserHistoryEntry }) {
+  return (
+    <Link
+      to={`/room/${h.locationSlug}`}
+      className="flex items-center gap-3 rounded-xl border border-line bg-surface p-3 shadow-[var(--shadow-notion-sm)] transition hover:shadow-[var(--shadow-notion-md)]"
+    >
+      <ModeIcon mode={h.activityMode} className="shrink-0 text-lg text-ink-muted" />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-ink">{h.locationName}</p>
+        <p className="truncate font-mono text-xs text-ink-muted">"{h.body}"</p>
+      </div>
+      <OutcomeBadge stamp={h.stamp} stayedFullBlock={h.stayedFullBlock} />
+    </Link>
   );
 }
 
@@ -281,8 +341,8 @@ function NotificationPrefs({
   }
 
   return (
-    <section className="mt-8 rounded-lg border border-line bg-surface p-4">
-      <h2 className="text-sm font-medium uppercase tracking-wide text-ink-muted">Notifications</h2>
+    <section className="rounded-xl border border-line bg-surface p-4">
+      <h3 className="font-sans text-sm font-semibold uppercase tracking-wide text-ink-muted">Notifications</h3>
       <label className="mt-3 flex items-center justify-between gap-3 text-sm text-ink">
         <span>Chime sounds on phase shifts</span>
         <input
@@ -299,13 +359,9 @@ function NotificationPrefs({
           {notifPermission === "denied" && <span className="ml-1 text-xs text-amber-700">(blocked in browser settings)</span>}
         </span>
         {notifPermission !== "unsupported" && notifPermission !== "granted" && notifPermission !== "denied" && (
-          <button
-            type="button"
-            onClick={handleEnableNotifications}
-            className="shrink-0 rounded-md border border-ink px-3 py-1.5 text-xs font-medium text-ink"
-          >
+          <Button variant="secondary" size="sm" onClick={handleEnableNotifications} className="shrink-0">
             Enable notifications
-          </button>
+          </Button>
         )}
       </div>
     </section>

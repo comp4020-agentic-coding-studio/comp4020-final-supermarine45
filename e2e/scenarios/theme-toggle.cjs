@@ -24,7 +24,12 @@ module.exports = async function run(server) {
       page.on("pageerror", (err) => pageErrors.push(err));
       try {
         await page.goto(baseUrl);
-        const toggle = page.locator("header button[aria-label*='theme']").first();
+        // The header renders a ThemeToggle in both its narrow (sm:hidden) and
+        // wide (hidden sm:block) rows for responsive layout, same pattern as
+        // the hamburger button in header-responsive.cjs. `:visible` picks
+        // whichever instance actually renders at this page's viewport,
+        // instead of `.first()`'s DOM-order match which may be the hidden one.
+        const toggle = page.locator("header button[aria-label*='theme']:visible").first();
         await toggle.waitFor();
 
         const before = await page.evaluate(() => document.documentElement.dataset.theme);
@@ -54,7 +59,7 @@ module.exports = async function run(server) {
       page.on("pageerror", (err) => pageErrors.push(err));
       try {
         await page.goto(baseUrl);
-        const toggle = page.locator("header button[aria-label*='theme']").first();
+        const toggle = page.locator("header button[aria-label*='theme']:visible").first();
         await toggle.waitFor();
 
         await toggle.click();
@@ -63,7 +68,7 @@ module.exports = async function run(server) {
         ok(stored === "light" || stored === "dark" || stored === "system", `expected a stored theme preference, got ${stored}`);
 
         await page.reload();
-        await page.waitForSelector("header button[aria-label*='theme']");
+        await page.waitForSelector("header button[aria-label*='theme']:visible");
         const afterReload = await page.evaluate(() => document.documentElement.dataset.theme);
         equal(afterReload, chosen, "resolved theme should persist across a reload");
 

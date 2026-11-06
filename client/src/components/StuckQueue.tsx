@@ -11,7 +11,7 @@ export function StuckQueue({ tickets, now }: { tickets: Ticket[]; now: number })
   if (stuck.length === 0) return null;
 
   return (
-    <div className="rounded-lg border border-amber/30 bg-white/5 p-4 text-white">
+    <div className="rounded-xl border border-amber/30 bg-white/5 p-4 text-white">
       <h2 className="font-mono text-xs uppercase tracking-widest text-amber">Stuck queue</h2>
       <ol className="mt-2 list-decimal space-y-1 pl-4 text-sm">
         {stuck.map((ticket) => {

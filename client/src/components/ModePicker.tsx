@@ -5,6 +5,7 @@ import { ModeIcon } from "./icons";
 import { PerimeterRing } from "./PerimeterRing";
 import { ringColor } from "./TableDashboard";
 import { Avatar } from "./Avatar";
+import { Badge } from "./Badge";
 
 const MODE_ACCENT: Record<string, string> = {
   silent: "border-l-amber-600",
@@ -58,7 +59,7 @@ export function ModePicker({
           <motion.div key={info.mode} variants={cardVariants} whileHover={{ y: -2 }} whileTap={{ scale: 0.98 }}>
             <Link
               to={`/room/${slug}/${info.mode}`}
-              className={`group block h-full rounded-lg border border-l-4 border-line bg-surface p-4 shadow-sm transition hover:shadow-md ${MODE_ACCENT[info.mode] ?? ""}`}
+              className={`group block h-full rounded-xl border border-l-4 border-line bg-surface p-4 shadow-[var(--shadow-notion-sm)] transition hover:-translate-y-0.5 hover:shadow-[var(--shadow-notion-md)] ${MODE_ACCENT[info.mode] ?? ""}`}
             >
               <div className="flex items-start justify-between gap-2">
                 <h3 className="flex items-center gap-2 font-semibold text-ink">
@@ -67,20 +68,14 @@ export function ModePicker({
                 </h3>
                 <div className="flex items-center gap-2">
                   {summary && summary.status !== "idle" && (
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                        summary.status === "focus" ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"
-                      }`}
-                    >
-                      {summary.status}
-                    </span>
+                    <Badge tone={summary.status === "focus" ? "amber" : "sage"}>{summary.status}</Badge>
                   )}
                   {summary && summary.status !== "idle" && (
                     <PerimeterRing filled={elapsedFor(summary, now)} color={ringColor(summary.timer)} size={20} trackColor="rgba(0,0,0,0.1)" />
                   )}
                 </div>
               </div>
-              <p className="mt-1 text-sm text-ink-muted">{info.description}</p>
+              <p className="mt-1 font-serif text-sm text-ink-muted">{info.description}</p>
               <div className="mt-3 flex items-center gap-3 text-xs text-ink-muted">
                 <span>{summary?.occupants ?? 0} here</span>
                 <span>&middot;</span>

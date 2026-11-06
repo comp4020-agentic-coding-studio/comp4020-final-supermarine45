@@ -1,6 +1,7 @@
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { Route, Routes, useLocation } from "react-router-dom";
 import { Header } from "./components/Header";
+import { Sidebar } from "./components/Sidebar";
 import { LandingPage } from "./pages/LandingPage";
 import { BuildingPage } from "./pages/BuildingPage";
 import { RoomPage } from "./pages/RoomPage";
@@ -44,9 +45,12 @@ export default function App() {
   // prefers-reduced-motion media query itself, live.
   return (
     <MotionConfig reducedMotion="user">
-      <div className="min-h-screen bg-canvas">
-        <Header />
-        <AnimatedRoutes />
+      <div className="flex min-h-screen bg-canvas">
+        <Sidebar />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <Header />
+          <AnimatedRoutes />
+        </div>
       </div>
     </MotionConfig>
   );

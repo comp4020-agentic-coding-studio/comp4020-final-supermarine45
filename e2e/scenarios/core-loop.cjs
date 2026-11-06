@@ -19,6 +19,14 @@ module.exports = async function run(server) {
 
     const sockA = connectSocket(baseUrl, a.cookie);
     const sockB = connectSocket(baseUrl, b.cookie);
+    // This scenario holds both sockets through a full focus block into break
+    // — long enough for the server's own check-in pings to reach them (see
+    // spec/tab-telemetry.test.ts). Answering them honestly keeps this test
+    // about the core loop, not about the unrelated check-in demotion path
+    // (which has its own dedicated spec coverage) — same pattern as
+    // spec/kudos-and-stamp.test.ts.
+    sockA.on("room:checkin-request", () => sockA.emit("room:checkin-confirm"));
+    sockB.on("room:checkin-request", () => sockB.emit("room:checkin-confirm"));
     try {
       await Promise.all([once(sockA, "connect"), once(sockB, "connect")]);
       sockA.emit("room:join", { slug, mode });

@@ -55,22 +55,35 @@ Give me summaries of all the features made thus far.
 =======================================================================================================
 display initially the building, then in each bulding, display the study spaces. This list should be comprehensive
 
-- Improve the visuals of the countdown timer to match apple's countdown timer, with old school flipping windows
-
-- resize the window to fill the screen better.
-
-+ create logout after 5 minutes inactivity
-
-- Joining should be automatic. As in the session starts when the user is in the room and click that It would like to join, no one needs to start
-
 - In the stats, I want to see previous tickets/goals, and see which one I have completed, or which one I have yet to complete. When I log out or log in a session, it should show past goals which were not yet completed. This will highlight the persistence of information in the application.
-
-- What is the time line for each of the modes? I get solo time every 1 minute, instead of the actual pomodoro style timer.
-
-Add ways to give encouragements between users.
-
-Depending on user permission, will it possible to lock the user’s window (ex? To have the user very focused.
 
 - When a new user is created, it should check against the database to ensure the username or email address does not already exist.
 
-+ Add option to arrange different timer block, i.e., if the user would like to finish early. But the global timer should stay at 50 minute (to decrease onboaring threshold).
+- Add option to arrange different timer block, i.e., if the user would like to finish early. But the global timer should stay at 50 minute (to decrease onboaring threshold).
+=======================================================================================================
+Lastly, I would like a redesign as I find the current design quite flat. I would like a design more closely resemble the productive app Notion. Please search the internet and see what design from Notion can be implemented. Give me a comprehensive, detailed breakdown.
+=======================================================================================================
+Now I want to test all the functionality of my system. To do this, first kill all processes and restart one instance in localhost 8080. Do the test only under this localhost, and make sure the changes are all persistent in the database (not deleted after testing)
+
+Then spawn agents to test the following:
+1. Check for user account creation (3 user accounts) and anonymous users (2 anonymous users). Give me the created accounts and passwords, so I can check afterwards. Also create one user account to test for deletion.
+
+2. Go through all for modes iteratively, across two buildings. Check that the changes are live (e.g., when a user enters or leaves a room/session).
+
+3. Start the sessions, set goals, and test that the goal completing, session extension, session early termination all works well.
+
+4. Test for goal pivoting for the anonymous and user account. 
+
+5. Test for the discussion, whiteboards, and swaps for the users in each of the modes.
+
+6. Check that the user metrics/statistics, room metrics/statistics, hours studied, and goals are logged properly in the user accounts. I will also check this myself after the testing is over. I want to see the metrics of the users after the sessions are done.
+
+7. Test this over many sessions. As the session is 50 minute each, I expect the real test to run for hours. You can check back periodically to not have to continuously poll and burn through credits. 
+
+Give me update at each periodic check, on what has been done and what can I expect to see in the UI. I will monitor this myself in the localhost:8080 as an anonymous user, as it is going as well.
+=======================================================================================================
+- What is the time line for each of the modes? I get solo time every 1 minute, instead of the actual pomodoro style timer.
+
+- Add ways to give encouragements between users.
+
+- Depending on user permission, will it possible to lock the user’s window. To have the user very focused.

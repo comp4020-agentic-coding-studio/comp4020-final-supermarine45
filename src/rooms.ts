@@ -21,11 +21,13 @@ import {
   getTable,
   getTicket,
   incrementStreak,
+  incrementTableRollovers,
   isGuest,
   listLocations,
   listTickets,
   listUpcomingSessions,
   markTicketNotFullBlock,
+  pivotTicket,
   resetStreak,
   setTableState,
   stampTicket,
@@ -62,6 +64,16 @@ export const TABLE_CAPACITY = 6;
 // unaffected. Same process.env.X || default convention as every other
 // timing constant in this file.
 export const CYCLE_START_GRANULARITY_MS = Number(process.env.CYCLE_START_GRANULARITY_MS) || 5 * 60 * 1000;
+
+// Personal shorter duration (chosen at board time, see room:submit-ticket):
+// a small fixed preset, not free-form input, per CLAUDE.md's "Simple
+// Interface" mandate. 50 is the full block and stores as personalDurationMs:
+// null (equivalent to "no override") rather than FOCUS_DURATION_MS itself,
+// so the shared table timer stays the single source of truth for the full
+// block's exact length. Expressed as minutes-of-50 (scaled against
+// FOCUS_DURATION_MS, like ACTIVITY_MODE_INFO.splitMinutes/splitMsFor) so a
+// test-speed TABLE_CYCLE_MS shortens these proportionally too.
+export const PERSONAL_DURATION_PRESETS_MIN = [25, 40, 50] as const;
 
 const MAX_TICKET_LEN = 60;
 const VAGUE_TICKETS = new Set(["study", "work", "homework", "stuff", "things", "read", "reading"]);
@@ -237,6 +249,35 @@ const whiteboards = new Map<string, WhiteboardState>();
 // clicks Launch, so a disengaged table can't block itself.
 const whiteboardFallbackTimers = new Map<string, NodeJS.Timeout>();
 
+// Peer Review (Writing Clinic Collab only): opens automatically at minute 40
+// (no manual "Launch" step, unlike the Whiteboard) via armPeerReviewTimer.
+// In-memory only, same precedent as whiteboards — a review round has no
+// persistence requirement and starts fresh every new focus cycle.
+export type PeerReviewHighlightKind = "strong" | "confusing" | "citation";
+interface PeerReviewHighlight {
+  start: number;
+  end: number;
+  kind: PeerReviewHighlightKind;
+  byUserId: number;
+}
+interface PeerReviewDraft {
+  userId: number;
+  username: string;
+  text: string;
+}
+interface PeerReviewState {
+  openedAt: number | null;
+  drafts: Map<number, PeerReviewDraft>; // keyed by authorId
+  assignments: Map<number, number>; // reviewerUserId -> authorUserId (N-way rotation)
+  highlights: Map<number, PeerReviewHighlight[]>; // keyed by authorId
+}
+const peerReviews = new Map<string, PeerReviewState>();
+// tableKey -> the one-off timer that auto-opens the Peer Review portal at
+// minute 40 — see armPeerReviewTimer.
+const peerReviewTimers = new Map<string, NodeJS.Timeout>();
+const MAX_DRAFT_WORDS = 200;
+const MAX_PEER_REVIEW_HIGHLIGHTS = 100;
+
 function shadowCount(locationId: number, mode: ActivityMode): number {
   return shadowCounts.get(tableKey(locationId, mode))?.size ?? 0;
 }
@@ -375,6 +416,7 @@ export function broadcastRoom(io: Server, db: DatabaseSync, locationId: number, 
     whiteboardOpenedAt: whiteboard?.openedAt ?? null,
     whiteboardText: whiteboard?.text ?? "",
     whiteboardHighlights: whiteboard?.highlights ?? [],
+    peerReviewOpenedAt: peerReviews.get(key)?.openedAt ?? null,
     capacity: TABLE_CAPACITY,
     upcoming: listUpcomingSessions(db, locationId),
   });
@@ -400,6 +442,9 @@ function clearTableTimer(key: string): void {
   const whiteboardFallback = whiteboardFallbackTimers.get(key);
   if (whiteboardFallback) clearTimeout(whiteboardFallback);
   whiteboardFallbackTimers.delete(key);
+  const peerReview = peerReviewTimers.get(key);
+  if (peerReview) clearTimeout(peerReview);
+  peerReviewTimers.delete(key);
   const checkins = checkinTimers.get(key);
   if (checkins) checkins.forEach(clearTimeout);
   checkinTimers.delete(key);
@@ -428,6 +473,7 @@ function armNextTransition(io: Server, db: DatabaseSync, locationId: number, mod
     if (state.status === "focus") {
       armSubphaseTimer(io, db, locationId, mode, state);
       armWhiteboardFallbackTimer(io, db, locationId, mode, state);
+      armPeerReviewTimer(io, db, locationId, mode, state);
       armCheckinTimers(io, db, locationId, mode, state);
     }
     return;
@@ -486,6 +532,29 @@ function armWhiteboardFallbackTimer(io: Server, db: DatabaseSync, locationId: nu
   );
 }
 
+// Opens the Peer Review portal automatically at the Collab split point
+// (minute 40) — unlike the Whiteboard, there's no manual "Launch" step here,
+// since the feature request describes it opening on its own. Writing Clinic
+// only — the only mode with Peer Review at all.
+function armPeerReviewTimer(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, state: RoomState): void {
+  if (mode !== "writing") return;
+  const split = splitMsFor(mode);
+  if (split === null) return;
+  const key = tableKey(locationId, mode);
+  const openAt = state.phaseStartedAt! + split;
+  const delay = openAt - Date.now();
+  if (delay <= 0) return;
+  peerReviewTimers.set(
+    key,
+    setTimeout(() => {
+      if (peerReviews.get(key)?.openedAt != null) return;
+      peerReviews.set(key, { openedAt: Date.now(), drafts: new Map(), assignments: new Map(), highlights: new Map() });
+      logSystemAction(db, locationId, "System", `Peer Review opened for ${mode}.`);
+      broadcastRoom(io, db, locationId, mode);
+    }, delay),
+  );
+}
+
 // Arms the two per-focus-block check-in pings (see CHECKIN_OFFSETS_MIN).
 // Each fires requestCheckin for every live, non-demoted presence at this
 // table independently — a ping already answered or already past (e.g. armed
@@ -519,9 +588,10 @@ function beginScheduledFocus(
     armNextTransition(io, db, locationId, mode);
     return;
   }
-  // Fresh Whiteboard per cycle — a prior cycle's scratch text must never
-  // leak into the next one's Collab window.
+  // Fresh Whiteboard/Peer Review per cycle — a prior cycle's scratch text or
+  // draft/highlight state must never leak into the next one's Collab window.
   whiteboards.delete(tableKey(locationId, mode));
+  peerReviews.delete(tableKey(locationId, mode));
   setTableState(db, locationId, mode, "focus", cycleStartAt, cycleStartAt + FOCUS_DURATION_MS, FOCUS_DURATION_MS);
   logSystemAction(db, locationId, "System", `Focus began for ${mode} with ${boarded} boarded ticket(s).`);
   broadcastRoom(io, db, locationId, mode);
@@ -535,6 +605,10 @@ function beginScheduledFocus(
 function endFocus(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode): void {
   const state = getTable(db, locationId, mode);
   setTableState(db, locationId, mode, "break", state.phaseStartedAt, Date.now() + BREAK_DURATION_MS, BREAK_DURATION_MS);
+  // beginScheduledFocus only ever transitions a cycle into focus when at
+  // least one ticket boarded, so every endFocus call is a table that was
+  // genuinely active — the Library Stats "rolled over N times" counter.
+  incrementTableRollovers(db, locationId, mode);
   logSystemAction(db, locationId, "System", `Focus ended for ${mode}; break started.`);
   broadcastRoom(io, db, locationId, mode);
   broadcastLobby(io, db);
@@ -653,6 +727,24 @@ function ticketBodyError(body: unknown): string | null {
   return null;
 }
 
+// Board-time personal duration: undefined/omitted means "full shared block"
+// (stored as null, see upsertTicket). Anything present must match the fixed
+// preset — never free-form minutes, per CLAUDE.md's "Simple Interface."
+function personalDurationError(personalDurationMinutes: unknown): string | null {
+  if (personalDurationMinutes === undefined || personalDurationMinutes === null) return null;
+  if (typeof personalDurationMinutes !== "number") return "invalid_duration";
+  if (!(PERSONAL_DURATION_PRESETS_MIN as readonly number[]).includes(personalDurationMinutes)) return "invalid_duration";
+  return null;
+}
+
+// 50 (the full preset) stores as null so the shared FOCUS_DURATION_MS stays
+// the single source of truth for the un-shortened block's exact length.
+function personalDurationMsFor(personalDurationMinutes: number | undefined | null): number | null {
+  if (personalDurationMinutes === undefined || personalDurationMinutes === null) return null;
+  if (personalDurationMinutes >= 50) return null;
+  return Math.round(FOCUS_DURATION_MS * (personalDurationMinutes / 50));
+}
+
 // Shared gate for every Whiteboard handler: Problem-Solving only, mid-focus,
 // and only once that cycle has reached its Collab subphase — the Whiteboard
 // doesn't exist outside that window.
@@ -661,6 +753,79 @@ function whiteboardSubphaseOk(db: DatabaseSync, locationId: number, mode: Activi
   const state = getTable(db, locationId, mode);
   if (state.status !== "focus") return false;
   return computeSubphase(mode, Date.now() - state.phaseStartedAt!) === "collab";
+}
+
+// Shared gate for every Peer Review handler, exact same shape as
+// whiteboardSubphaseOk — Writing Clinic only, mid-focus, Collab subphase.
+function peerReviewSubphaseOk(db: DatabaseSync, locationId: number, mode: ActivityMode): boolean {
+  if (mode !== "writing") return false;
+  const state = getTable(db, locationId, mode);
+  if (state.status !== "focus") return false;
+  return computeSubphase(mode, Date.now() - state.phaseStartedAt!) === "collab";
+}
+
+function draftTextError(text: unknown): string | null {
+  if (typeof text !== "string") return "invalid_draft";
+  const trimmed = text.trim();
+  if (trimmed.length < 1) return "invalid_draft";
+  const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+  if (wordCount > MAX_DRAFT_WORDS) return "invalid_draft";
+  return null;
+}
+
+// N-way shuffle (Decision: not reciprocal pairs): shuffle every current
+// submitter into a random order, then each reviews the next person's draft
+// (wrapping around) — A reviews B's, B reviews C's, C reviews A's. For n >= 3
+// this guarantees nobody reviews the person reviewing them; at n === 2 mutual
+// review is unavoidable and is the only well-defined assignment. Recomputed
+// from scratch on every new submission (fine for a lightweight classroom
+// feature — a late submitter simply reshuffles the whole rotation).
+function recomputePeerReviewAssignments(state: PeerReviewState): void {
+  const authorIds = [...state.drafts.keys()];
+  state.assignments.clear();
+  if (authorIds.length < 2) return;
+  const shuffled = [...authorIds];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  for (let i = 0; i < shuffled.length; i++) {
+    state.assignments.set(shuffled[i], shuffled[(i + 1) % shuffled.length]);
+  }
+}
+
+// Delivers per-user Peer Review data via targeted emits (same precedent as
+// room:checkin-request) rather than cramming user-scoped data into the shared
+// broadcastRoom payload: a reviewer gets the draft they're assigned plus its
+// highlights so far, and an author whose draft is under review gets a live
+// refresh of the highlights landing on their own text — the "Live Replicated
+// Effect" the feature request describes. Called after a draft submission
+// (assignments may have changed) and after every new highlight.
+function broadcastPeerReviewState(io: Server, locationId: number, mode: ActivityMode): void {
+  const key = tableKey(locationId, mode);
+  const state = peerReviews.get(key);
+  if (!state) return;
+  const table = presence.get(key);
+  if (!table) return;
+  for (const entry of table.values()) {
+    const authorId = state.assignments.get(entry.user.id);
+    if (authorId !== undefined) {
+      const draft = state.drafts.get(authorId);
+      if (draft) {
+        io.to(entry.socketId).emit("room:peer-review-assignment", {
+          authorId,
+          authorUsername: draft.username,
+          text: draft.text,
+          highlights: state.highlights.get(authorId) ?? [],
+        });
+      }
+    }
+    if (state.drafts.has(entry.user.id)) {
+      io.to(entry.socketId).emit("room:peer-review-highlights", {
+        highlights: state.highlights.get(entry.user.id) ?? [],
+      });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -734,6 +899,11 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       });
       broadcastRoom(io, db, joinedLocationId, joinedMode);
       broadcastLobby(io, db);
+      // A user who (re)joins after the portal already opened still needs
+      // their assignment/highlights without waiting for someone else's next
+      // submission or highlight — room:update alone doesn't carry this
+      // per-user-scoped data (see broadcastPeerReviewState's own comment).
+      if (user) broadcastPeerReviewState(io, joinedLocationId, joinedMode);
     });
 
     socket.on("set_pseudonym", ({ pseudonym }: { pseudonym?: string }) => {
@@ -772,7 +942,7 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       confirmCheckin(io, db, joined.locationId, joined.mode, socket.id);
     });
 
-    socket.on("room:submit-ticket", ({ body }: { body?: string }) => {
+    socket.on("room:submit-ticket", ({ body, personalDurationMinutes }: { body?: string; personalDurationMinutes?: number }) => {
       if (!joined) return;
       const user = currentIdentity();
       if (!user || isShadow || isDemoted()) {
@@ -783,6 +953,11 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       const error = ticketBodyError(body);
       if (error) {
         socket.emit("room:error", { error, action: "room:submit-ticket" });
+        return;
+      }
+      const durationError = personalDurationError(personalDurationMinutes);
+      if (durationError) {
+        socket.emit("room:error", { error: durationError, action: "room:submit-ticket" });
         return;
       }
       const { locationId, mode } = joined;
@@ -801,14 +976,62 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       if (!existing && !isGuest(user.id)) {
         const previous = getPreviousTicket(db, locationId, mode, user.id, cycleStartAt);
         if (previous) {
-          if (previous.stamp === "completed") incrementStreak(db, user.id, locationId, mode);
+          // Pivoted preserves/increments the streak same as Completed
+          // (locked-in decision) — a pivot is still a finished, checked-out
+          // ticket, just one whose goal changed mid-block.
+          if (previous.stamp === "completed" || previous.stamp === "pivoted") incrementStreak(db, user.id, locationId, mode);
           else resetStreak(db, user.id, locationId, mode);
         }
       }
-      upsertTicket(db, locationId, mode, user.id, user.username, cycleStartAt, (body as string).trim());
+      upsertTicket(
+        db,
+        locationId,
+        mode,
+        user.id,
+        user.username,
+        cycleStartAt,
+        (body as string).trim(),
+        personalDurationMsFor(personalDurationMinutes),
+      );
       logRoomAction(db, locationId, identityLabel(user, socket.id), `Submitted ticket for ${mode}: "${(body as string).trim()}"`);
       broadcastRoom(io, db, locationId, mode);
       broadcastLobby(io, db);
+    });
+
+    // Pivot Goal: rewrite your own in-progress ticket's body mid-focus,
+    // distinct from room:submit-ticket (which boards or silently edits a
+    // not-yet-locked ticket) so the client can reliably diff old-vs-new body
+    // for the strikethrough/retype animation on everyone else's screen.
+    socket.on("room:pivot-ticket", ({ body }: { body?: string }) => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:pivot-ticket. Rejected.");
+        socket.emit("room:error", { error: "unauthorized", action: "room:pivot-ticket" });
+        return;
+      }
+      const error = ticketBodyError(body);
+      if (error) {
+        socket.emit("room:error", { error, action: "room:pivot-ticket" });
+        return;
+      }
+      const { locationId, mode } = joined;
+      const state = getTable(db, locationId, mode);
+      if (state.status !== "focus") {
+        socket.emit("room:error", { error: "not_focusing", action: "room:pivot-ticket" });
+        return;
+      }
+      const cycleStartAt = cycleStartAtFor(state);
+      const existing = getTicket(db, locationId, mode, user.id, cycleStartAt);
+      if (!existing) {
+        socket.emit("room:error", { error: "no_ticket", action: "room:pivot-ticket" });
+        return;
+      }
+      const previousBody = existing.body;
+      const trimmed = (body as string).trim();
+      pivotTicket(db, locationId, mode, user.id, cycleStartAt, trimmed);
+      logRoomAction(db, locationId, identityLabel(user, socket.id), `Pivoted ticket: "${previousBody}" -> "${trimmed}"`);
+      broadcastRoom(io, db, locationId, mode);
     });
 
     socket.on("room:toggle-stuck", () => {
@@ -840,9 +1063,19 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       }
       const { locationId, mode } = joined;
       const state = getTable(db, locationId, mode);
-      if (state.status !== "break" || (stamp !== "completed" && stamp !== "partial")) {
+      if (state.status !== "break" || (stamp !== "completed" && stamp !== "partial" && stamp !== "pivoted")) {
         socket.emit("room:error", { error: "not_breaking", action: "room:stamp-ticket" });
         return;
+      }
+      if (stamp === "pivoted") {
+        // Only offer this stamp to a ticket that was actually pivoted — the
+        // Break Modal already hides the button otherwise, this is the
+        // server-side half of that same contract.
+        const ticket = getTicket(db, locationId, mode, user.id, state.phaseStartedAt!);
+        if (!ticket || ticket.pivotedAt == null) {
+          socket.emit("room:error", { error: "not_pivoted", action: "room:stamp-ticket" });
+          return;
+        }
       }
       stampTicket(db, locationId, mode, user.id, state.phaseStartedAt!, stamp);
       logRoomAction(db, locationId, identityLabel(user, socket.id), `Stamped ticket as ${stamp}.`);
@@ -979,6 +1212,88 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) return;
       socket.to(roomName(locationId, mode)).emit("whiteboard:cursor", { userId: user.id, x, y });
     });
+
+    // Peer Review: paste up to 200 words of your draft once the portal is
+    // open. Re-submitting replaces your own draft in place and reshuffles the
+    // N-way rotation (fine for a lightweight classroom feature — see
+    // recomputePeerReviewAssignments).
+    socket.on("room:submit-draft", ({ text }: { text?: string }) => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:submit-draft. Rejected.");
+        socket.emit("room:error", { error: "unauthorized", action: "room:submit-draft" });
+        return;
+      }
+      const { locationId, mode } = joined;
+      if (!peerReviewSubphaseOk(db, locationId, mode)) {
+        socket.emit("room:error", { error: "wrong_mode", action: "room:submit-draft" });
+        return;
+      }
+      const key = tableKey(locationId, mode);
+      const state = peerReviews.get(key);
+      if (!state || state.openedAt === null) {
+        socket.emit("room:error", { error: "not_open", action: "room:submit-draft" });
+        return;
+      }
+      const error = draftTextError(text);
+      if (error) {
+        socket.emit("room:error", { error, action: "room:submit-draft" });
+        return;
+      }
+      state.drafts.set(user.id, { userId: user.id, username: user.username, text: (text as string).trim() });
+      recomputePeerReviewAssignments(state);
+      logRoomAction(db, locationId, identityLabel(user, socket.id), "Submitted a draft for Peer Review.");
+      broadcastPeerReviewState(io, locationId, mode);
+    });
+
+    // Highlighting: only the reviewer assigned to this author's draft may
+    // highlight it (checked against the N-way rotation, not just "anyone at
+    // the table"), and only with one of the three fixed kinds — no typed
+    // feedback, per the feature request.
+    socket.on(
+      "room:peer-highlight",
+      ({ authorId, start, end, kind }: { authorId?: number; start?: number; end?: number; kind?: PeerReviewHighlightKind }) => {
+        if (!joined) return;
+        const user = currentIdentity();
+        if (!user || isShadow || isDemoted()) {
+          logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:peer-highlight. Rejected.");
+          socket.emit("room:error", { error: "unauthorized", action: "room:peer-highlight" });
+          return;
+        }
+        const { locationId, mode } = joined;
+        if (!peerReviewSubphaseOk(db, locationId, mode)) {
+          socket.emit("room:error", { error: "wrong_mode", action: "room:peer-highlight" });
+          return;
+        }
+        const state = peerReviews.get(tableKey(locationId, mode));
+        if (!state || state.openedAt === null) {
+          socket.emit("room:error", { error: "not_open", action: "room:peer-highlight" });
+          return;
+        }
+        if (state.assignments.get(user.id) !== authorId) {
+          socket.emit("room:error", { error: "not_assigned", action: "room:peer-highlight" });
+          return;
+        }
+        if (
+          typeof start !== "number" ||
+          typeof end !== "number" ||
+          !Number.isFinite(start) ||
+          !Number.isFinite(end) ||
+          start < 0 ||
+          end < start ||
+          (kind !== "strong" && kind !== "confusing" && kind !== "citation")
+        ) {
+          socket.emit("room:error", { error: "invalid_highlight", action: "room:peer-highlight" });
+          return;
+        }
+        const highlights = state.highlights.get(authorId as number) ?? [];
+        if (highlights.length >= MAX_PEER_REVIEW_HIGHLIGHTS) highlights.shift();
+        highlights.push({ start, end, kind, byUserId: user.id });
+        state.highlights.set(authorId as number, highlights);
+        broadcastPeerReviewState(io, locationId, mode);
+      },
+    );
 
     socket.on("room:leave", () => {
       if (!joined) return;

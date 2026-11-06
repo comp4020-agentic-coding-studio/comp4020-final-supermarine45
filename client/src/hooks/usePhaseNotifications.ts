@@ -31,11 +31,21 @@ function notify(title: string, body: string): void {
   }
 }
 
-export function usePhaseNotifications(room: RoomUpdatePayload | null, myUserId: number | undefined, chimeEnabled: boolean): void {
+export function usePhaseNotifications(
+  room: RoomUpdatePayload | null,
+  myUserId: number | undefined,
+  chimeEnabled: boolean,
+  now: number,
+): void {
   const prevStatusRef = useRef<string | undefined>(undefined);
   const prevSubphaseRef = useRef<string | null | undefined>(undefined);
   const prevWhiteboardOpenedAtRef = useRef<number | null | undefined>(undefined);
   const prevKudosCountRef = useRef<number | undefined>(undefined);
+  // Fires once per personal-duration ticket (keyed by ticket id) — a shorter
+  // personal block chosen at board time, see TicketForm's duration preset.
+  // Purely an attention cue: doesn't pause, stamp, or remove the ticket, and
+  // never touches the shared table timer other members see.
+  const personalNudgedTicketIdRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!room) return;
@@ -70,4 +80,15 @@ export function usePhaseNotifications(room: RoomUpdatePayload | null, myUserId: 
       prevKudosCountRef.current = kudosCount;
     }
   }, [room, myUserId, chimeEnabled]);
+
+  useEffect(() => {
+    if (!room || myUserId === undefined || room.timer.status !== "focus") return;
+    const myTicket = room.tickets.find((t) => t.userId === myUserId);
+    if (!myTicket || myTicket.personalDurationMs == null) return;
+    if (personalNudgedTicketIdRef.current === myTicket.id) return;
+    if (now < myTicket.cycleStartAt + myTicket.personalDurationMs) return;
+    personalNudgedTicketIdRef.current = myTicket.id;
+    if (chimeEnabled) playChime();
+    notify("⏱️ Personal block done", `Your ${Math.round(myTicket.personalDurationMs / 60_000)}m block is up — the table keeps going.`);
+  }, [room, myUserId, chimeEnabled, now]);
 }

@@ -1,62 +1,73 @@
 # What I built: Shut Up and Read
-Shut Up and Read is a productivity app, initially based on ANUSA Shut-up-and-Write (SUAW). Regular get-together and focus on short, productive writing in an environment using Pomodoro Technique (50 minute sessions, 10 min rests for coffee, chats).
+**Shut Up and Read** is a productivity app inspired by ANUSA's *Shut Up and Write* (SUAW) initiative. It brings students together for focused writing sessions using the Pomodoro Technique: 50 minutes of work followed by a 10-minute break for coffee or informal discussion:
+
 https://web.archive.org/web/20230305234720/https://thesiswhisperer.com/shut-up-and-write/
 
-With the core idea that students used their time in such session/group settings effectively.
-
-I worked on this idea and improve it and enhance it, such that it becomes a more comprehensive productive app, that connects students in various study spaces, to ....
-
-Moreover, I introduced several features that...
-
-## Observed Problem:
-The idea comes from the student’s own experience, finding it difficult to find a study partner/study group, be it due to difficulties aligning schedules, or in general, having no friends who would like to dedicate/block time to study.
-
-Meanwhile, (research) studying in groups have several benefits:
-1. Collaborative learning generate insights that individual studying does not.
-2. Psychological persistence.
-3. Tackling complex problems to prevent cognitive overload.
-4. Co-action effect (doing tasks with peers creates social pressure to perform).
-5. Increases energy levels and stimulate (body doubling)
-6. Increased time on task
-
-(INCLUDE CITATIONS HERE IN APA STYLE)
-
-I started the project by looking at several (physicological) studies surrounding the concepts of focus, group studies, accountability, ...:
-
+Building on this concept, the project transforms it into a digital platform connecting students across campus for structured group study sessions while preserving individual focus time.
 
 ## Target User:
+The app is designed for ANU students, who can choose from four distinct *Ways of Working*, depending on their study objectives:
 
-General students (ANU) vs students of specific courses (study sessions on specific topics only).
-App will have four modes:
-1. Silent focus - general students, cross disciplines, who are looking to find study buddies and want to engage in silent, study sessions.
-2. Active collaboration - matches students without people who’s in the same course code/discipline; talk, engage, debate.
-....
+- **Silent Focus:** Individual work for the full 50 minutes, without breakouts or discussions.
+- **Writing Clinic:** Individual drafting for 40 minutes, followed by a 10-minute peer-feedback session in a breakout room.
+- **Concept Pitch:** Individual preparation for 40 minutes, followed by a 10-minute brainstorming session in a breakout room.
+- **Problem-Solving:** Individual problem-solving for 40 minutes, followed by a 10-minute collaborative session to solve and check answers using a shared whiteboard.
 
-## Feedback (TA):
-Based on the feedback of the TA, ANUSA's current 'Shut Up and Write" program is not very useful as it does not facilitate discussion between students (i.e., studying tips, how to write better). In line with this, and the project's spec for a multi-user behaviour, I design this new app with multi-user behaviours, including:
+## Observed Problem:
+The idea stemmed from my difficulty finding study partners or organising study groups (*organising costs*, (Kirschner, Paas, & Kirschner, 2011)) and finding friends willing to dedicate time to studying.
+
+Moreover, simply bringing students together does not guarantee productive collaboration. In discussion with the TA, it was highlighted that ANUSA's existing SUAW initiative does not sufficiently facilitate interaction between participants, such as exchanging study tips or discussing ways to improve their writing.
+
+In response to this feedback, and in line with the project's multi-user requirements, I designed four key principles:
+
+1. **Self-reflection**
+
+   Each 10-minute discussion session begins with a 90-second reflection prompt. This encourages students to identify their individual *bottlenecks* before engaging in group discussion. For example: "What was the most challenging structural issue in your draft?"
+
+2. **Dedicated Individual Work Time**
+
+   Though group work can be motivating, working exclusively in a collaborative setting can hinder individual performance, a cognitive phenomenon known as *collaborative inhibition*. Drawing on research into collaborative work design (Gyollai, 2025), the app therefore preserves dedicated individual work periods before introducing collaborative activities.
+
+3. **Deliverable Tickets**
+
+   Unstructured group work can lead to *social loafing*, whereby individuals reduce their effort when working collectively (Karau & Williams, 1993). To mitigate this and keep individual accountability, students are prompted to submit a *Deliverable Ticket* outlining their intended contribution to the group's objectives before each session. 
+
+4. **Interactive Breakout Sessions**
+
+   Rather than relying on passive interaction, the app incorporates structured breakout activities that require active participation. For example, the *Writing Clinic* mode facilitates peer-review exchanges, allowing students to swap their drafts and provide feedback to one another.
 
 ## The Idea (i.e., features and their rationale)
-THe app was designed around four "Ways of working":
-....
-These were based on the research outlined in _Observed Problem_ section.
+Beyond these core features, the app's design also considers several practical challenges that could affect students' ability to participate consistently and maintain focus.
 
-Concretely, these were implemented as:
-1. "Strava-styled" statistics
-...
+1. **User Activeness**
 
-Additionally, I implemented comprehensive logging:
+   To encourage accountability, the app tracks users' *activeness* through periodic check-in notifications and individual activity statistics (in _Strava_ style), such as the number of study hours logged.
 
-1. System: currently logged in users.
-2. Activity: user activities.
-3. Status: server status.
+2. **Reducing Organising Costs**
 
-## Why: What good
-These features were design to address several points we have highlighted earlier:
-1. Collaborative inhibition: overrides individual information when engaging in group discussion -> ??
-2. Social loafing: less effort put when individuals are working in group setting -> individual accountability (stats, strata like).
-3. Transaction cost when organising group dynamics -> make it simple to start and join study session, and automate organisation when possible.
-4. Amplifaction of error (if a dominant individual is confidently explaining something wrong, the group tends to just accept it) -> facilitate discussion (feedback sessions) after the end of the study, and during the study.
-5. Emotional contagion of stress (individual stress is mirrored in a group setting) -> ??
-6. Distraction conflict theory -> ??
-7. Visual distration in digital environment -> keep the design simple and productive focused.
+   Organising a group study session can be inconvenient. To reduce this barrier, the app aims to make onboarding as frictionless as possible. Students can *drop in* to an ongoing study session, either with or without creating an account.
+
+3. **Minimising Distractions**
+
+   A full-window application running in the foreground could become distracting or disrupt students' existing workflows. To address this, the interface uses a compact pop-up window with a timer displaying only minutes. This allows students to keep the app running in the background while continuing their work.
+
+4. **Limiting Visual and Social Distractions**
+
+   To retain focus during individual time, multi-user interactions are deliberately restricted to a small set of lightweight actions, such as sending _Strava_ styled *Kudos*. This allows students to acknowledge and encourage one another without interrupting their workflow.
+
+In addition to the user-facing features, I implemented a logging system:
+
+1. **System:** Tracks currently logged-in users.
+2. **Activity:** Records user activities and interactions.
+3. **Status:** Monitors the server's operational status.
+
+
+## References:
+Ghaleb, B. D. S. (2024). Social loafing: Understanding, mitigating, and enhancing group performance. International Journal of Scientific Multidisciplinary Research, 2(9), 1321–1328. https://doi.org/10.55927/ijsmr.v2i9.10975
+
+Gyollai, D. (2025). Collaborative inhibition: A phenomenological perspective. Review of Philosophy and Psychology, 16, 633–651. https://doi.org/10.1007/s13164-024-00748-7
+
+Karau, S. J., & Williams, K. D. (1993). Social loafing: A meta-analytic review and theoretical integration. *Journal of Personality and Social Psychology*, *65*(4), 681-706.
+
+Kirschner, F., Paas, F., & Kirschner, P. A. (2011). Task complexity as a driver for collaborative learning efficiency: The collective working-memory effect. *Applied Cognitive Psychology*, *25*(4), 615-624.
 

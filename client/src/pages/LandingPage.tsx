@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { getLocations, type LocationSummary } from "../api";
 import { useLobbySocket } from "../hooks/useTableSocket";
+import { hueFor } from "../components/Avatar";
 
 interface BuildingCard {
   slug: string;
@@ -55,10 +56,12 @@ export function LandingPage() {
 
   return (
     <main className="mx-auto max-w-7xl px-6 py-16">
-      <p className="font-mono text-xs uppercase tracking-wide text-ink-muted">
+      <div className="h-32 rounded-2xl bg-gradient-to-br from-accent-tint to-surface" />
+
+      <p className="mt-6 font-mono text-xs uppercase tracking-wide text-ink-muted">
         {totalHere > 0 ? `${totalHere} ${totalHere === 1 ? "person" : "people"} here now` : "Quiet on campus right now"}
       </p>
-      <h1 className="mt-2 font-mono text-4xl font-semibold tracking-tight text-ink">Where is everyone right now?</h1>
+      <h1 className="mt-2 font-sans text-[32px] font-semibold tracking-tight text-ink">Where is everyone right now?</h1>
       <p className="mt-2 max-w-2xl text-sm text-ink-muted">Pick an ANU building. Then pick a room and join who's already there.</p>
 
       <motion.div
@@ -73,18 +76,21 @@ export function LandingPage() {
             <motion.div key={building.slug} variants={cardVariants} whileHover={{ y: -3 }} whileTap={{ scale: 0.98 }}>
               <Link
                 to={`/building/${building.slug}`}
-                className="block h-full rounded-xl border border-line bg-surface p-5 shadow-sm transition hover:shadow-lg hover:ring-1 hover:ring-anu-gold/40"
+                className="block h-full overflow-hidden rounded-xl border border-line bg-surface shadow-[var(--shadow-notion-sm)] transition hover:-translate-y-0.5 hover:shadow-[var(--shadow-notion-md)]"
               >
-                <div className="flex items-start justify-between gap-2">
-                  <h2 className="font-semibold text-ink">{building.name}</h2>
-                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${active ? "bg-sage" : "bg-ink-muted/30"}`} />
-                </div>
-                <p className="mt-1 text-xs text-ink-muted">
-                  {building.roomCount} {building.roomCount === 1 ? "room" : "rooms"}
-                </p>
-                <div className="mt-4 flex items-center gap-3 font-mono text-xs text-ink-muted">
-                  {building.shadowCount > 0 && <span>{building.shadowCount} watching</span>}
-                  <span className={active ? "font-medium text-sage-dim" : ""}>{building.occupants} here</span>
+                <div className="h-1.5" style={{ background: `hsl(${hueFor(building.name)} 45% 55%)` }} />
+                <div className="p-5">
+                  <div className="flex items-start justify-between gap-2">
+                    <h2 className="font-semibold text-ink">{building.name}</h2>
+                    <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${active ? "bg-sage" : "bg-ink-muted/30"}`} />
+                  </div>
+                  <p className="mt-1 text-xs text-ink-muted">
+                    {building.roomCount} {building.roomCount === 1 ? "room" : "rooms"}
+                  </p>
+                  <div className="mt-4 flex items-center gap-3 font-mono text-xs text-ink-muted">
+                    {building.shadowCount > 0 && <span>{building.shadowCount} watching</span>}
+                    <span className={active ? "font-medium text-sage-dim" : ""}>{building.occupants} here</span>
+                  </div>
                 </div>
               </Link>
             </motion.div>

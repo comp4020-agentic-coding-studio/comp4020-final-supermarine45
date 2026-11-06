@@ -30,6 +30,14 @@ module.exports = async function run(server) {
     await scenario("the auto-join toggle boards a new ticket on an unattended break -> idle -> focus transition", async () => {
       const user = await registerUniqueUser(baseUrl, "auto-join");
       const observer = connectSocket(baseUrl, user.cookie);
+      // This scenario holds the table across two full focus blocks — long
+      // enough for the server's own check-in pings to reach the observer
+      // socket (see spec/tab-telemetry.test.ts). Answering them honestly
+      // here keeps this test about the auto-join toggle, not the unrelated
+      // check-in demotion path — same pattern as spec/kudos-and-stamp.test.ts.
+      // The real browser page answers its own ping via CheckInModal's "I'm
+      // here" button, handled below once it appears.
+      observer.on("room:checkin-request", () => observer.emit("room:checkin-confirm"));
       // Register this listener synchronously, right after connectSocket(),
       // not after the page/cookie setup below — those are two slow `await`s,
       // and if "connect" fires while they're in flight, a once() attached
@@ -62,6 +70,30 @@ module.exports = async function run(server) {
         await once(observer, "room:joined");
 
         await page.goto(`${baseUrl}/room/${slug}/${mode}`);
+
+        // This test spans two full focus blocks, so the browser's own
+        // socket (managed internally by useTableSocket.ts, not controllable
+        // from here) will get check-in pings like any other live Active
+        // user. Answer them by clicking CheckInModal's "I'm here (Ns)"
+        // button whenever it's up — a background poll rather than a single
+        // wait, since the modal can appear at either of the two per-block
+        // offsets and this loop must outlive both blocks. Matching on
+        // "here" alone stays robust to the changing countdown suffix.
+        let watchingCheckIn = true;
+        const checkInWatcher = (async () => {
+          while (watchingCheckIn) {
+            try {
+              const btn = page.locator("button:has-text('here')");
+              if ((await btn.count()) > 0 && (await btn.first().isVisible())) {
+                await btn.first().click();
+              }
+            } catch {
+              // Page mid-navigation or closed between polls — retry next tick.
+            }
+            await page.waitForTimeout(500);
+          }
+        })();
+
         await page.fill("#ticket-body", "Scope the next problem");
         await page.click("button:has-text('Board this table')");
 
@@ -103,7 +135,11 @@ module.exports = async function run(server) {
 
         await page.click("button:has-text('Stop')");
         await page.waitForSelector("button:has-text('Start auto-join')");
+
+        watchingCheckIn = false;
+        await checkInWatcher;
       } finally {
+        watchingCheckIn = false;
         await page.close();
         observer.disconnect();
       }

@@ -1,9 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 import { adoptSession } from "../api";
 import type {
   ActivityMode,
   CheckinRequestPayload,
+  PeerReviewAssignmentPayload,
+  PeerReviewHighlightKind,
+  PeerReviewHighlightsPayload,
   PseudonymSetPayload,
   RoomError,
   RoomJoinedPayload,
@@ -27,15 +30,21 @@ export interface TableSocketState {
   isShadow: boolean;
   cursors: CursorMap;
   pendingCheckIn: CheckinRequestPayload | null;
-  submitTicket: (body: string) => void;
+  peerReviewAssignment: PeerReviewAssignmentPayload | null;
+  myPeerReviewHighlights: PeerReviewHighlightsPayload["highlights"];
+  myDraftSubmitted: boolean;
+  submitTicket: (body: string, personalDurationMinutes?: number) => void;
+  pivotTicket: (body: string) => void;
   toggleStuck: () => void;
-  stampTicket: (stamp: "completed" | "partial") => void;
+  stampTicket: (stamp: "completed" | "partial" | "pivoted") => void;
   sendKudos: (toUserId: number, emoji: string) => void;
   setPseudonym: (pseudonym: string) => void;
   launchWhiteboard: () => void;
   whiteboardPaste: (text: string) => void;
   whiteboardHighlight: (start: number, end: number) => void;
   whiteboardCursor: (x: number, y: number) => void;
+  submitDraft: (text: string) => void;
+  peerHighlight: (authorId: number, start: number, end: number, kind: PeerReviewHighlightKind) => void;
   confirmCheckIn: () => void;
   reconnect: () => void;
   leave: () => void;
@@ -72,6 +81,13 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
   const [isShadow, setIsShadow] = useState(false);
   const [cursors, setCursors] = useState<CursorMap>({});
   const [pendingCheckIn, setPendingCheckIn] = useState<CheckinRequestPayload | null>(null);
+  const [peerReviewAssignment, setPeerReviewAssignment] = useState<PeerReviewAssignmentPayload | null>(null);
+  const [myPeerReviewHighlights, setMyPeerReviewHighlights] = useState<PeerReviewHighlightsPayload["highlights"]>([]);
+  // Draft submission has no dedicated ack event — arrival of the targeted
+  // room:peer-review-highlights event IS the signal (server only emits it to
+  // sockets whose user already has a draft on file; see broadcastPeerReviewState).
+  const [myDraftSubmitted, setMyDraftSubmitted] = useState(false);
+  const cycleStartAtRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     if (!slug || !mode) return;
@@ -81,6 +97,10 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
     setError(null);
     setCursors({});
     setPendingCheckIn(null);
+    setPeerReviewAssignment(null);
+    setMyPeerReviewHighlights([]);
+    setMyDraftSubmitted(false);
+    cycleStartAtRef.current = undefined;
 
     function join(): void {
       socket.emit("room:join", { slug, mode });
@@ -99,6 +119,15 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
       setError(null);
     }
     function onUpdate(payload: RoomUpdatePayload): void {
+      // Peer Review's in-memory server state is wiped every new focus cycle
+      // (src/rooms.ts's beginScheduledFocus) — mirror that here so a stale
+      // "draft submitted" flag or assignment from last cycle doesn't linger.
+      if (cycleStartAtRef.current !== payload.cycleStartAt) {
+        cycleStartAtRef.current = payload.cycleStartAt;
+        setMyDraftSubmitted(false);
+        setPeerReviewAssignment(null);
+        setMyPeerReviewHighlights([]);
+      }
       setRoom(payload);
     }
     function onError(payload: RoomError): void {
@@ -119,6 +148,14 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
     function onCheckinRequest(payload: CheckinRequestPayload): void {
       setPendingCheckIn(payload);
     }
+    // Targeted at this socket only — see src/rooms.ts's broadcastPeerReviewState.
+    function onPeerReviewAssignment(payload: PeerReviewAssignmentPayload): void {
+      setPeerReviewAssignment(payload);
+    }
+    function onPeerReviewHighlights(payload: PeerReviewHighlightsPayload): void {
+      setMyDraftSubmitted(true);
+      setMyPeerReviewHighlights(payload.highlights);
+    }
 
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
@@ -128,6 +165,8 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
     socket.on("pseudonym:set", onPseudonymSet);
     socket.on("whiteboard:cursor", onCursor);
     socket.on("room:checkin-request", onCheckinRequest);
+    socket.on("room:peer-review-assignment", onPeerReviewAssignment);
+    socket.on("room:peer-review-highlights", onPeerReviewHighlights);
 
     if (socket.connected) onConnect();
     else setStatus("connecting");
@@ -141,6 +180,8 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
       socket.off("pseudonym:set", onPseudonymSet);
       socket.off("whiteboard:cursor", onCursor);
       socket.off("room:checkin-request", onCheckinRequest);
+      socket.off("room:peer-review-assignment", onPeerReviewAssignment);
+      socket.off("room:peer-review-highlights", onPeerReviewHighlights);
     };
   }, [slug, mode]);
 
@@ -152,7 +193,12 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
     isShadow,
     cursors,
     pendingCheckIn,
-    submitTicket: (body: string) => getSocket().emit("room:submit-ticket", { body }),
+    peerReviewAssignment,
+    myPeerReviewHighlights,
+    myDraftSubmitted,
+    submitTicket: (body: string, personalDurationMinutes?: number) =>
+      getSocket().emit("room:submit-ticket", { body, personalDurationMinutes }),
+    pivotTicket: (body: string) => getSocket().emit("room:pivot-ticket", { body }),
     toggleStuck: () => getSocket().emit("room:toggle-stuck"),
     stampTicket: (stamp) => getSocket().emit("room:stamp-ticket", { stamp }),
     sendKudos: (toUserId, emoji) => getSocket().emit("room:send-kudos", { toUserId, emoji }),
@@ -161,6 +207,9 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
     whiteboardPaste: (text: string) => getSocket().emit("room:whiteboard-paste", { text }),
     whiteboardHighlight: (start: number, end: number) => getSocket().emit("room:whiteboard-highlight", { start, end }),
     whiteboardCursor: (x: number, y: number) => getSocket().emit("room:whiteboard-cursor", { x, y }),
+    submitDraft: (text: string) => getSocket().emit("room:submit-draft", { text }),
+    peerHighlight: (authorId: number, start: number, end: number, kind: PeerReviewHighlightKind) =>
+      getSocket().emit("room:peer-highlight", { authorId, start, end, kind }),
     confirmCheckIn: () => {
       setPendingCheckIn(null);
       getSocket().emit("room:checkin-confirm");

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Clock } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { useAuth } from "../context/useAuth";
@@ -16,7 +17,9 @@ import { BreakModal } from "../components/BreakModal";
 import { CheckInModal } from "../components/CheckInModal";
 import { StuckQueue } from "../components/StuckQueue";
 import { Whiteboard } from "../components/Whiteboard";
-import { ClockIcon } from "../components/icons";
+import { PeerReview } from "../components/PeerReview";
+import { Callout } from "../components/Callout";
+import { Button } from "../components/Button";
 import { ticketBodyError } from "../validation";
 import type { ActivityMode, RoomStatus } from "../types";
 
@@ -41,7 +44,11 @@ export function TablePage() {
     isShadow,
     cursors,
     pendingCheckIn,
+    peerReviewAssignment,
+    myPeerReviewHighlights,
+    myDraftSubmitted,
     submitTicket,
+    pivotTicket,
     toggleStuck,
     stampTicket,
     sendKudos,
@@ -50,13 +57,15 @@ export function TablePage() {
     whiteboardPaste,
     whiteboardHighlight,
     whiteboardCursor,
+    submitDraft,
+    peerHighlight,
     confirmCheckIn,
     reconnect,
     leave,
   } = useTableSocket(slug, mode);
 
   const [pseudonymInput, setPseudonymInput] = useState("");
-  const [queuedReboard, setQueuedReboard] = useState<string | null>(null);
+  const [queuedReboard, setQueuedReboard] = useState<{ body: string; personalDurationMinutes?: number } | null>(null);
   const [scheduleAt, setScheduleAt] = useState("");
   const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [autoJoin, setAutoJoin] = useState(false);
@@ -64,7 +73,7 @@ export function TablePage() {
   const [autoJoinError, setAutoJoinError] = useState<string | null>(null);
 
   const { chimeEnabled } = useChimePreference(me, refresh);
-  usePhaseNotifications(room, me?.id, chimeEnabled);
+  usePhaseNotifications(room, me?.id, chimeEnabled, now);
 
   const prevStatusRef = useRef<RoomStatus | undefined>(undefined);
   useEffect(() => {
@@ -72,7 +81,7 @@ export function TablePage() {
     const cur = room?.timer.status;
     if (prev === "break" && cur === "idle") {
       if (queuedReboard !== null) {
-        submitTicket(queuedReboard);
+        submitTicket(queuedReboard.body, queuedReboard.personalDurationMinutes);
         setQueuedReboard(null);
       } else if (autoJoin && autoJoinBody.trim()) {
         submitTicket(autoJoinBody);
@@ -136,15 +145,21 @@ export function TablePage() {
       <Link to={`/room/${slug}`} className="text-sm text-ink-muted underline">
         &larr; {joined?.location.name ?? slug}
       </Link>
-      <h1 className="mt-2 font-mono text-2xl font-semibold text-ink">{joined?.modeInfo.label ?? mode}</h1>
-      {joined && <p className="mt-1 text-sm text-ink-muted">{joined.modeInfo.description}</p>}
+      <h1 className="mt-2 font-sans text-[32px] font-semibold tracking-tight text-ink">{joined?.modeInfo.label ?? mode}</h1>
+      {joined && <p className="mt-1 font-serif text-sm text-ink-muted">{joined.modeInfo.description}</p>}
 
       {error && (
-        <div className="mt-4 flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
-          <span>{ERROR_COPY[error.error] ?? error.error}</span>
-          <button type="button" onClick={reconnect} className="shrink-0 underline">
-            retry
-          </button>
+        <div className="mt-4">
+          <Callout
+            tone="red"
+            action={
+              <Button variant="ghost" size="sm" onClick={reconnect} className="shrink-0">
+                retry
+              </Button>
+            }
+          >
+            {ERROR_COPY[error.error] ?? error.error}
+          </Callout>
         </div>
       )}
 
@@ -196,7 +211,9 @@ export function TablePage() {
           )}
 
           {!isShadow && (
-            <div className={`rounded-lg border p-4 ${isDark ? "border-white/10 bg-white/5 text-white" : "border-black/10 bg-white"}`}>
+            <div
+              className={`rounded-xl border p-4 ${isDark ? "border-white/10 bg-white/5 text-white" : "border-line bg-surface text-ink"}`}
+            >
               {autoJoin ? (
                 <div className="flex items-center justify-between gap-3">
                   <p className={`text-sm ${isDark ? "text-sage" : "text-sage-dim"}`}>
@@ -213,7 +230,7 @@ export function TablePage() {
               ) : (
                 <form onSubmit={handleEnableAutoJoin} className="space-y-2">
                   <p className="text-sm font-medium">Auto-join the next session</p>
-                  <p className={`text-xs ${isDark ? "text-white/60" : "text-slate"}`}>
+                  <p className={`text-xs ${isDark ? "text-white/60" : "text-ink-muted"}`}>
                     Automatically board this table every cycle with the same ticket, until you stop it.
                   </p>
                   <div className="flex items-center gap-2">
@@ -250,6 +267,7 @@ export function TablePage() {
             now={now}
             onToggleStuck={toggleStuck}
             onSendKudos={sendKudos}
+            onPivotTicket={pivotTicket}
           />
 
           {room && mode === "problem" && room.timer.status === "focus" && (
@@ -272,9 +290,20 @@ export function TablePage() {
             />
           )}
 
-          <section className="rounded-lg border border-line bg-surface p-4">
-            <h2 className="flex items-center gap-2 font-medium text-ink">
-              <ClockIcon className="text-ink-muted" />
+          {room && mode === "writing" && room.timer.status === "focus" && room.timer.subphase === "collab" && (
+            <PeerReview
+              peerReviewOpenedAt={room.peerReviewOpenedAt}
+              myDraftSubmitted={myDraftSubmitted}
+              myHighlights={myPeerReviewHighlights}
+              assignment={peerReviewAssignment}
+              onSubmitDraft={submitDraft}
+              onHighlight={peerHighlight}
+            />
+          )}
+
+          <section className="rounded-xl border border-line bg-surface p-4">
+            <h2 className="flex items-center gap-2 font-sans text-xl font-semibold text-ink">
+              <Clock size={18} strokeWidth={1.5} className="text-ink-muted" />
               Plan ahead
             </h2>
             <p className="mt-1 text-xs text-ink-muted">Book a future hourly cycle at this hub so others know you're coming.</p>
@@ -312,11 +341,11 @@ export function TablePage() {
                   type="datetime-local"
                   value={scheduleAt}
                   onChange={(e) => setScheduleAt(e.target.value)}
-                  className="rounded border border-line bg-surface px-2 py-1 text-sm text-ink"
+                  className="rounded-md border border-line bg-surface px-2 py-1 text-sm text-ink outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
                 />
-                <button type="submit" className="rounded-md border border-ink px-3 py-1.5 text-sm font-medium text-ink">
+                <Button type="submit" variant="secondary" size="sm">
                   Plan session
-                </button>
+                </Button>
               </form>
             ) : (
               <p className="mt-3 text-xs text-ink-muted">Registered accounts only &mdash; log in to plan ahead.</p>
@@ -336,9 +365,9 @@ export function TablePage() {
               myUserId={myUserId}
               onStamp={stampTicket}
               onSendKudos={sendKudos}
-              onReboard={setQueuedReboard}
+              onReboard={(body, personalDurationMinutes) => setQueuedReboard({ body, personalDurationMinutes })}
               onLeave={handleLeave}
-              reboardedBody={queuedReboard}
+              reboardedBody={queuedReboard?.body ?? null}
             />
           </motion.div>
         )}

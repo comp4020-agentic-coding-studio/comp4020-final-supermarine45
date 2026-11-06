@@ -12,7 +12,7 @@ export function PresentRoster({
 }) {
   if (entries.length === 0 && shadowCount === 0) return null;
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-lg border border-black/5 bg-white/40 px-4 py-3">
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-line bg-surface-muted px-4 py-3">
       <span className="text-xs font-medium uppercase tracking-wide text-slate">In the room</span>
       {entries.map((r) => (
         <div key={r.userId} className="flex items-center gap-1.5">

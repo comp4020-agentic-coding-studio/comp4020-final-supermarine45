@@ -12,7 +12,7 @@ export interface ActivityModeInfo {
 export type RoomStatus = "idle" | "focus" | "break";
 export type Subphase = "solo" | "collab" | null;
 
-export type TicketStamp = "completed" | "partial";
+export type TicketStamp = "completed" | "partial" | "pivoted";
 
 export interface Kudos {
   id: number;
@@ -34,6 +34,11 @@ export interface Ticket {
   stuckAt: number | null;
   stamp: TicketStamp | null;
   stayedFullBlock: boolean;
+  pivotedAt: number | null;
+  // Null means the full shared table block (the default). A shorter personal
+  // block chosen at board time — see TicketForm's duration preset — never
+  // changes the table-wide timer every other member sees.
+  personalDurationMs: number | null;
   createdAt: number;
 }
 
@@ -68,6 +73,15 @@ export interface WhiteboardHighlight {
   byUserId: number;
 }
 
+export type PeerReviewHighlightKind = "strong" | "confusing" | "citation";
+
+export interface PeerReviewHighlight {
+  start: number;
+  end: number;
+  kind: PeerReviewHighlightKind;
+  byUserId: number;
+}
+
 export interface RoomUpdatePayload {
   mode: ActivityMode;
   timer: TimerPayload;
@@ -79,8 +93,26 @@ export interface RoomUpdatePayload {
   whiteboardOpenedAt: number | null;
   whiteboardText: string;
   whiteboardHighlights: WhiteboardHighlight[];
+  peerReviewOpenedAt: number | null;
   capacity: number;
   upcoming: ScheduledSession[];
+}
+
+// Targeted (per-socket), not part of RoomUpdatePayload — same reasoning as
+// CheckinRequestPayload: only the reviewer assigned to this author's draft
+// needs to see it, and only the author needs to see highlights landing on
+// their own text. Sent on submit-draft, on every new highlight, and on
+// (re)join once the portal is already open — see rooms.ts's
+// broadcastPeerReviewState.
+export interface PeerReviewAssignmentPayload {
+  authorId: number;
+  authorUsername: string;
+  text: string;
+  highlights: PeerReviewHighlight[];
+}
+
+export interface PeerReviewHighlightsPayload {
+  highlights: PeerReviewHighlight[];
 }
 
 // Separate from RoomUpdatePayload deliberately: live cursors are a
@@ -220,6 +252,11 @@ export interface LocationHistoryEntry {
   stamp: TicketStamp | null;
   stayedFullBlock: boolean;
   cycleStartAt: number;
+}
+
+export interface LocationStats {
+  vfhThisWeek: number;
+  lastActiveRollovers: number;
 }
 
 export const KUDOS_EMOJI = ["⚡", "☕", "🧠"] as const;

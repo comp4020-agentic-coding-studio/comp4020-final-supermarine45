@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { registerAccount } from "../api";
 import { useAuth } from "../context/useAuth";
 import { reconnectSocket } from "../hooks/useTableSocket";
+import { Button } from "../components/Button";
 
 export function RegisterPage() {
   const [username, setUsername] = useState("");
@@ -27,7 +28,7 @@ export function RegisterPage() {
 
   return (
     <main className="mx-auto max-w-sm px-6 py-16">
-      <h1 className="font-mono text-2xl font-semibold text-ink">Register</h1>
+      <h1 className="font-sans text-[32px] font-semibold tracking-tight text-ink">Register</h1>
       <form onSubmit={handleSubmit} className="mt-6 flex flex-col gap-3">
         <input
           value={username}
@@ -35,7 +36,7 @@ export function RegisterPage() {
           placeholder="username (3-24, letters/digits/_/-)"
           autoComplete="username"
           required
-          className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-ink"
+          className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
         />
         <input
           type="email"
@@ -44,7 +45,7 @@ export function RegisterPage() {
           placeholder="ANU email (you@anu.edu.au)"
           autoComplete="email"
           required
-          className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-ink"
+          className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
         />
         <input
           type="password"
@@ -53,11 +54,11 @@ export function RegisterPage() {
           placeholder="password (8+ chars)"
           autoComplete="new-password"
           required
-          className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-ink"
+          className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-accent focus:ring-1 focus:ring-accent/30"
         />
-        <button type="submit" className="rounded-md bg-ink px-4 py-2 text-sm font-medium text-canvas">
+        <Button type="submit" variant="primary">
           Create account
-        </button>
+        </Button>
       </form>
       {error && <p className="mt-2 text-sm text-amber-700">{error}</p>}
       <p className="mt-4 text-sm text-ink-muted">
