@@ -15,6 +15,10 @@ const PIVOT_FLASH_MS = 1600;
 // A single low-opacity pulse, not a looping animation — CLAUDE.md's Calm
 // Technology mandate rules out anything resembling "animated avatars".
 const RIPPLE_MS = 800;
+// The full shared table block (see TicketForm.tsx's DURATION_PRESETS_MIN) —
+// used as the duration label's fallback for tickets with no personal,
+// shorter duration of their own.
+const FULL_BLOCK_MS = 50 * 60_000;
 
 export function ringColor(timer: TimerPayload): string {
   if (timer.status === "break") return "#e07a5f";
@@ -162,6 +166,9 @@ export function TableDashboard({
                 <p className="truncate text-sm font-medium">
                   {ticket.username}
                   {isMe && <span className="ml-1 opacity-60">(you)</span>}
+                  <span className="ml-1.5 font-mono text-xs opacity-50">
+                    {Math.round((ticket.personalDurationMs ?? FULL_BLOCK_MS) / 60_000)}m
+                  </span>
                 </p>
                 {checkinPending && <p className="text-xs text-amber-500">check-in pending</p>}
                 {personalTotalMin !== null && (
@@ -235,21 +242,25 @@ export function TableDashboard({
               </button>
             )}
 
-            {timer.status === "break" && (
+            {(timer.status === "break" || timer.status === "focus") && (
               <div className="mt-3 flex items-center justify-between">
-                <span
-                  className={`rounded px-2 py-0.5 text-xs ${
-                    ticket.stamp === "completed"
-                      ? "bg-sage/20 text-sage"
-                      : ticket.stamp === "partial"
-                        ? "bg-amber/20 text-amber"
-                        : ticket.stamp === "pivoted"
-                          ? "bg-violet-400/20 text-violet-300"
-                          : "opacity-50"
-                  }`}
-                >
-                  {ticket.stamp ?? "not checked out"}
-                </span>
+                {timer.status === "break" ? (
+                  <span
+                    className={`rounded px-2 py-0.5 text-xs ${
+                      ticket.stamp === "completed"
+                        ? "bg-sage/20 text-sage"
+                        : ticket.stamp === "partial"
+                          ? "bg-amber/20 text-amber"
+                          : ticket.stamp === "pivoted"
+                            ? "bg-violet-400/20 text-violet-300"
+                            : "opacity-50"
+                    }`}
+                  >
+                    {ticket.stamp ?? "not checked out"}
+                  </span>
+                ) : (
+                  <span />
+                )}
                 {!isMe && myUserId !== undefined && (
                   <div className="flex gap-1">
                     {KUDOS_EMOJI.map((emoji) => (

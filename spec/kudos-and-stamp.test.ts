@@ -95,17 +95,17 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 
 const mode = "silent";
 
-// Both handlers share the same gate: Kudos and the Stamp are a 3-card break
-// ritual, not something a table can do mid-focus — src/rooms.ts checks
-// state.status === "break" before it even looks at the emoji/stamp/recipient
-// a caller sent. A valid-shaped emoji and stamp are used here specifically to
-// prove the rejection is about the *phase*, not about those values.
+// room:stamp-ticket is still a break-only ritual for an ordinary full-block
+// ticket — src/rooms.ts checks state.status === "break" (with a narrow
+// personal-duration carve-out tested separately in early-finish-stamp.test.ts)
+// before it even looks at the stamp value a caller sent. room:send-kudos is
+// no longer gated to break at all (see the acceptance test below) — kudos is
+// a lightweight predefined reaction, not a break-only ritual.
 it(
-  "rejects both room:send-kudos and room:stamp-ticket while the table is still in focus",
+  "rejects room:stamp-ticket while the table is still in focus and no personal-duration block has elapsed",
   async () => {
     const slug = "law-l3";
     const cookie = await registerAndGetCookie(`notbreak-${randomUUID().slice(0, 8)}`);
-    const { id: userId } = await getMe(cookie);
 
     const socket = connect(cookie);
     try {
@@ -118,17 +118,56 @@ it(
       socket.emit("room:submit-ticket", { body: "Read two chapters" });
       await withTimeout(sawFocus, TABLE_CYCLE_MS + 10000, "socket to see focus status");
 
-      const kudosRejection = once<RoomError>(socket, "room:error");
-      socket.emit("room:send-kudos", { toUserId: userId, emoji: "⚡" });
-      const kudosPayload = await withTimeout(kudosRejection, 5000, "room:error for send-kudos during focus");
-      expect(kudosPayload).toEqual({ error: "not_breaking", action: "room:send-kudos" });
-
       const stampRejection = once<RoomError>(socket, "room:error");
       socket.emit("room:stamp-ticket", { stamp: "completed" });
       const stampPayload = await withTimeout(stampRejection, 5000, "room:error for stamp-ticket during focus");
       expect(stampPayload).toEqual({ error: "not_breaking", action: "room:stamp-ticket" });
     } finally {
       socket.close();
+    }
+  },
+  TABLE_CYCLE_MS + 20000,
+);
+
+// The gate room:send-kudos actually enforces post-fix: not_breaking only ever
+// fires for a bad phase (idle) or a malformed emoji, never for "it's focus,
+// not break" — this proves a normal full-block focus cycle accepts a kudos
+// the moment both tickets are boarded, without waiting for break at all.
+it(
+  "accepts room:send-kudos while the table is still in focus",
+  async () => {
+    const slug = "chifley-lg";
+    const uid = randomUUID().slice(0, 8);
+    const aCookie = await registerAndGetCookie(`kudos-focus-a-${uid}`);
+    const bCookie = await registerAndGetCookie(`kudos-focus-b-${uid}`);
+    const { id: bId } = await getMe(bCookie);
+
+    const a = connect(aCookie);
+    const b = connect(bCookie);
+    try {
+      await Promise.all([once(a, "connect"), once(b, "connect")]);
+      a.emit("room:join", { slug, mode });
+      await once(a, "room:joined");
+      await once(a, "room:update");
+      b.emit("room:join", { slug, mode });
+      await once(b, "room:joined");
+      await once(b, "room:update");
+
+      const aFocus = untilStatus(a, "focus");
+      const bFocus = untilStatus(b, "focus");
+      a.emit("room:submit-ticket", { body: "Draft intro" });
+      b.emit("room:submit-ticket", { body: "Outline conclusion" });
+      await withTimeout(aFocus, TABLE_CYCLE_MS + 10000, "A to see focus status");
+      await withTimeout(bFocus, TABLE_CYCLE_MS + 10000, "B to see focus update");
+
+      const bSeesKudos = untilKudosFrom(b, bId, (await getMe(aCookie)).id);
+      a.emit("room:send-kudos", { toUserId: bId, emoji: "☕" });
+      const kudosPayload = await withTimeout(bSeesKudos, 5000, "B to see A's kudos land during focus");
+      const bTicket = kudosPayload.tickets.find((t) => t.userId === bId);
+      expect(bTicket?.kudos.length).toBe(1);
+    } finally {
+      a.close();
+      b.close();
     }
   },
   TABLE_CYCLE_MS + 20000,

@@ -798,6 +798,28 @@ export function getPreviousTicket(
   return row ? toTicket(row) : undefined;
 }
 
+// This user's most recently-started ticket at this table as of `nowMs`,
+// inclusive of a ticket started exactly now — used by autoStampAbandonedTicket
+// (rooms.ts) to find the ticket to credit when a disconnect happens after the
+// table has already gone "idle" (endBreak has nulled state.phaseStartedAt by
+// then, so there's no cycle key left to look the ticket up by directly).
+export function getMostRecentStartedTicket(
+  db: DatabaseSync,
+  locationId: number,
+  mode: ActivityMode,
+  userId: number,
+  nowMs: number,
+): Ticket | undefined {
+  const row = db
+    .prepare(
+      `SELECT ${TICKET_COLUMNS} FROM tickets ` +
+        "WHERE location_id = ? AND activity_mode = ? AND user_id = ? AND cycle_start_at <= ? " +
+        "ORDER BY cycle_start_at DESC LIMIT 1",
+    )
+    .get(locationId, mode, userId, nowMs) as unknown as TicketRow | undefined;
+  return row ? toTicket(row) : undefined;
+}
+
 export function toggleStuck(
   db: DatabaseSync,
   locationId: number,

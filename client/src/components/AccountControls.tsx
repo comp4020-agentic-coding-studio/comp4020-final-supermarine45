@@ -24,7 +24,9 @@ export function AccountControls({ onNavigate }: { onNavigate?: () => void }) {
       )}
       {me && me.isGuest && (
         <>
-          <span className="text-sm text-ink-muted">{me.username} &middot; guest</span>
+          <Link to="/account" onClick={onNavigate} className="text-sm text-ink-muted underline">
+            {me.username} &middot; guest
+          </Link>
           <button
             type="button"
             onClick={handleLogout}

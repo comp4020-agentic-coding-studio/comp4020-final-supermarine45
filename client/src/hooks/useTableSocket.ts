@@ -73,7 +73,11 @@ export function reconnectSocket(): void {
   socket.connect();
 }
 
-export function useTableSocket(slug: string | undefined, mode: ActivityMode | undefined): TableSocketState {
+export function useTableSocket(
+  slug: string | undefined,
+  mode: ActivityMode | undefined,
+  onIdentityChange?: () => void,
+): TableSocketState {
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const [joined, setJoined] = useState<RoomJoinedPayload | null>(null);
   const [room, setRoom] = useState<RoomUpdatePayload | null>(null);
@@ -136,6 +140,7 @@ export function useTableSocket(slug: string | undefined, mode: ActivityMode | un
     function onPseudonymSet(payload: PseudonymSetPayload): void {
       adoptSession(payload.token).then(() => {
         setIsShadow(false);
+        onIdentityChange?.();
         join();
       });
     }

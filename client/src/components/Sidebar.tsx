@@ -1,6 +1,8 @@
-import { Home, User } from "lucide-react";
+import { useMemo } from "react";
+import { Home, Radio, User } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { useAuth } from "../context/useAuth";
+import { useLobbySocket } from "../hooks/useTableSocket";
 import { AccountControls } from "./AccountControls";
 
 // Abstract open-book motif (two trapezoid "pages" meeting at a spine) — not a
@@ -34,6 +36,23 @@ function NavLink({ to, icon: Icon, label, active }: { to: string; icon: typeof H
 export function Sidebar() {
   const { me } = useAuth();
   const location = useLocation();
+  const lobbyLocations = useLobbySocket();
+
+  // Scans every hub/mode's live roster for this user — reuses the same
+  // lobby:update broadcast the Hubs page already subscribes to, so this adds
+  // no new server endpoint. Only ever non-null while actually boarded at a
+  // table somewhere (a ticket holder, not just an unboarded shadow visitor).
+  const myTable = useMemo(() => {
+    if (!me || !lobbyLocations) return null;
+    for (const loc of lobbyLocations) {
+      for (const modeSummary of loc.modes) {
+        if (modeSummary.roster.some((r) => r.userId === me.id)) {
+          return { slug: loc.slug, mode: modeSummary.mode };
+        }
+      }
+    }
+    return null;
+  }, [me, lobbyLocations]);
 
   return (
     <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-line bg-surface-muted sm:flex">
@@ -47,10 +66,16 @@ export function Sidebar() {
       <nav className="flex-1 space-y-3 px-3 py-2">
         <div>
           <p className="px-2.5 pb-1 font-sans text-xs font-medium uppercase tracking-wide text-ink-muted">Browse</p>
-          <NavLink to="/" icon={Home} label="Hubs" active={location.pathname === "/"} />
-          {me && !me.isGuest && (
-            <NavLink to="/account" icon={User} label="Account" active={location.pathname === "/account"} />
+          {myTable && (
+            <NavLink
+              to={`/room/${myTable.slug}/${myTable.mode}`}
+              icon={Radio}
+              label="Back to my session"
+              active={location.pathname === `/room/${myTable.slug}/${myTable.mode}`}
+            />
           )}
+          <NavLink to="/" icon={Home} label="Hubs" active={location.pathname === "/"} />
+          {me && <NavLink to="/account" icon={User} label="Account" active={location.pathname === "/account"} />}
         </div>
       </nav>
 

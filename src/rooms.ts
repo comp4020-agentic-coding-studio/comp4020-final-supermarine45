@@ -16,6 +16,7 @@ import {
   deleteUserTickets,
   getKudosForTicket,
   getLocationBySlug,
+  getMostRecentStartedTicket,
   getOrCreateTable,
   getPreviousTicket,
   getTable,
@@ -89,17 +90,33 @@ const MAX_WHITEBOARD_HIGHLIGHTS = 100;
 // every live Active user twice per focus block and requires an explicit
 // click-to-confirm within CHECKIN_GRACE_MS, or demotes them back to Shadow
 // exactly as the old tab-hidden penalty did. See requestCheckin/
-// applyCheckinPenalty. Offsets are expressed as a fraction of
-// FOCUS_DURATION_MS (same convention as ACTIVITY_MODE_INFO.splitMinutes/
-// splitMsFor) so they scale correctly under a test-speed TABLE_CYCLE_MS
-// override; CHECKIN_GRACE_MS is independently overridable (same
-// process.env.X || default convention) since it's a fixed human-response
-// budget, not a fraction of the cycle — a shortened test cycle needs this
-// shortened too, or the grace window could outlast the whole test-speed
-// focus block.
+// applyCheckinPenalty. Offsets are expressed as a fraction of the block
+// (40%/70% of 50 == 20/35) rather than absolute minutes, so they scale
+// correctly both under a test-speed TABLE_CYCLE_MS override AND under a
+// user's own Personal Shorter Duration ticket (see
+// PERSONAL_DURATION_PRESETS_MIN/personalDurationMsFor) — a user who boards a
+// shorter personal block still gets pinged at proportionally the same two
+// points in *their own* block, not the fixed 20/35-minute marks of the full
+// block (see checkinOffsetsMsFor/armCheckinTimers). CHECKIN_GRACE_MS is
+// independently overridable (same process.env.X || default convention)
+// since it's a fixed human-response budget, not a fraction of the cycle — a
+// shortened test cycle needs this shortened too, or the grace window could
+// outlast the whole test-speed focus block.
 export const CHECKIN_OFFSETS_MIN = [20, 35];
-function checkinOffsetsMs(): number[] {
-  return CHECKIN_OFFSETS_MIN.map((min) => FOCUS_DURATION_MS * (min / 50));
+const CHECKIN_OFFSET_FRACTIONS = CHECKIN_OFFSETS_MIN.map((min) => min / 50);
+function checkinOffsetsMsFor(durationMs: number): number[] {
+  return CHECKIN_OFFSET_FRACTIONS.map((fraction) => Math.round(durationMs * fraction));
+}
+// Every personal-duration preset (including the full 50m block) gets its own
+// pair of fire times, deduplicated into one list of table-wide timers —
+// armCheckinTimers arms one timer per entry here, and each firing filters
+// recipients by whichever offsets their own *current* ticket maps to (see
+// armCheckinTimers), rather than one timer set per user.
+function allCheckinFireOffsetsMs(): number[] {
+  const durations = PERSONAL_DURATION_PRESETS_MIN.map((min) => personalDurationMsFor(min) ?? FOCUS_DURATION_MS);
+  const offsets = new Set<number>();
+  for (const duration of durations) for (const offset of checkinOffsetsMsFor(duration)) offsets.add(offset);
+  return [...offsets].sort((a, b) => a - b);
 }
 export const CHECKIN_GRACE_MS = Number(process.env.CHECKIN_GRACE_MS) || 2 * 60 * 1000;
 
@@ -583,21 +600,31 @@ function armPeerReviewTimer(io: Server, db: DatabaseSync, locationId: number, mo
   );
 }
 
-// Arms the two per-focus-block check-in pings (see CHECKIN_OFFSETS_MIN).
-// Each fires requestCheckin for every live, non-demoted presence at this
-// table independently — a ping already answered or already past (e.g. armed
-// against a mid-block join that re-syncs via armNextTransition) just no-ops
-// per-offset rather than needing its own guard here.
+// Arms one table-wide timer per distinct check-in fire time across every
+// Personal Shorter Duration preset (see allCheckinFireOffsetsMs) — not one
+// timer set per user — and at each firing, filters recipients by whichever
+// two offsets *their own* current ticket maps to. The ticket (and therefore
+// personalDurationMs) is looked up fresh at fire time rather than cached at
+// arm time, since room:submit-ticket lets a user change their personal
+// duration mid-focus (the board form isn't hidden until break). A user with
+// no ticket yet, or whose personalDurationMs is null, is treated as the full
+// FOCUS_DURATION_MS block (today's behavior). A ping already answered or
+// already past just no-ops inside requestCheckin itself rather than needing
+// its own guard here.
 function armCheckinTimers(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, state: RoomState): void {
   const key = tableKey(locationId, mode);
-  const timers = checkinOffsetsMs()
-    .map((offset) => state.phaseStartedAt! + offset - Date.now())
-    .filter((delay) => delay > 0)
-    .map((delay) =>
+  const timers = allCheckinFireOffsetsMs()
+    .map((offset) => ({ offset, delay: state.phaseStartedAt! + offset - Date.now() }))
+    .filter(({ delay }) => delay > 0)
+    .map(({ offset, delay }) =>
       setTimeout(() => {
         const table = presence.get(key);
         if (!table) return;
-        for (const socketId of [...table.keys()]) requestCheckin(io, db, locationId, mode, socketId);
+        for (const [socketId, entry] of [...table]) {
+          const ticket = getTicket(db, locationId, mode, entry.user.id, state.phaseStartedAt!);
+          const durationMs = ticket?.personalDurationMs ?? FOCUS_DURATION_MS;
+          if (checkinOffsetsMsFor(durationMs).includes(offset)) requestCheckin(io, db, locationId, mode, socketId);
+        }
       }, delay),
     );
   checkinTimers.set(key, timers);
@@ -1105,7 +1132,17 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       }
       const { locationId, mode } = joined;
       const state = getTable(db, locationId, mode);
-      if (state.status !== "break" || (stamp !== "completed" && stamp !== "partial" && stamp !== "pivoted")) {
+      // A Personal Shorter Duration ticket (see PERSONAL_DURATION_PRESETS_MIN)
+      // may check out as soon as its own block elapses, even while the table
+      // is still "focus" for everyone else — this is the one carve-out to the
+      // otherwise break-only stamping ritual (see early-finish-stamp.test.ts).
+      const myTicketForEligibility =
+        state.status === "focus" ? getTicket(db, locationId, mode, user.id, state.phaseStartedAt!) : undefined;
+      const personalDone =
+        myTicketForEligibility?.personalDurationMs != null &&
+        Date.now() >= state.phaseStartedAt! + myTicketForEligibility.personalDurationMs;
+      const eligible = state.status === "break" || (state.status === "focus" && personalDone);
+      if (!eligible || (stamp !== "completed" && stamp !== "partial" && stamp !== "pivoted")) {
         socket.emit("room:error", { error: "not_breaking", action: "room:stamp-ticket" });
         return;
       }
@@ -1134,7 +1171,10 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       }
       const { locationId, mode } = joined;
       const state = getTable(db, locationId, mode);
-      if (state.status !== "break" || typeof emoji !== "string" || !KUDOS_EMOJI.has(emoji)) {
+      // Kudos is a lightweight predefined reaction (CLAUDE.md's "Kudos
+      // emojis" carve-out), not a break-only ritual like stamping — letting
+      // it fire during focus too lets a table cheer each other on mid-block.
+      if ((state.status !== "break" && state.status !== "focus") || typeof emoji !== "string" || !KUDOS_EMOJI.has(emoji)) {
         socket.emit("room:error", { error: "not_breaking", action: "room:send-kudos" });
         return;
       }
@@ -1361,8 +1401,62 @@ function leaveTable(socket: Socket, io: Server, db: DatabaseSync, joined: Joined
     if (entry?.penaltyTimeout) clearTimeout(entry.penaltyTimeout);
     presence.get(key)?.delete(socket.id);
     const user = socket.data.user as Identity | undefined;
-    if (user) logSystemAction(db, locationId, identityLabel(user, socket.id), `Left ${mode}.`);
+    if (user) {
+      logSystemAction(db, locationId, identityLabel(user, socket.id), `Left ${mode}.`);
+      autoStampAbandonedTicket(db, locationId, mode, user, key, socket.id);
+    }
   }
   broadcastRoom(io, db, locationId, mode);
   broadcastLobby(io, db);
+}
+
+// A ticket holder who finished their session but disconnects before ever
+// clicking a stamp button has no remaining way to check out — the modal that
+// would ask them left with their connection. Auto-credit them as "completed"
+// the moment they become unreachable, but only when this was their LAST live
+// connection to this table (a second open tab can still stamp manually) and
+// only once their session is genuinely over:
+//   - "break": the ordinary case — the table-wide focus block has ended, so
+//     anyone still holding an un-stamped, stayed_full_block ticket gets
+//     credited (see persistent-stats.test.ts's "crediting only the one who
+//     stamped": staying connected through break without stamping must still
+//     get 0 while they ARE connected — this only fires on the disconnect).
+//   - "focus": a personal-duration ticket (see PERSONAL_DURATION_PRESETS_MIN)
+//     whose own shorter block has already elapsed, even though the table
+//     itself is still "focus" for everyone else — mirrors room:stamp-ticket's
+//     own early-finish carve-out. An ordinary full-block ticket must still
+//     get nothing here (see persistent-stats.test.ts's "earns zero VFH for a
+//     ticket whose holder left before the block ended").
+//   - "idle": the table has already rolled over past break (endBreak nulls
+//     phase_started_at), so there's no cycle key left to look the ticket up
+//     by directly — getMostRecentStartedTicket finds it by scanning backward
+//     from now instead. This only fires on an actual disconnect, so it can
+//     never retroactively credit someone who just stays connected.
+function autoStampAbandonedTicket(
+  db: DatabaseSync,
+  locationId: number,
+  mode: ActivityMode,
+  user: Identity,
+  key: string,
+  socketId: string,
+): void {
+  const stillConnectedElsewhere = [...(presence.get(key)?.values() ?? [])].some((p) => p.user.id === user.id);
+  if (stillConnectedElsewhere) return;
+  const state = getTable(db, locationId, mode);
+
+  let ticket: Ticket | undefined;
+  if (state.status === "break" && state.phaseStartedAt !== null) {
+    ticket = getTicket(db, locationId, mode, user.id, state.phaseStartedAt);
+  } else if (state.status === "focus" && state.phaseStartedAt !== null) {
+    const candidate = getTicket(db, locationId, mode, user.id, state.phaseStartedAt);
+    const personalDone =
+      candidate?.personalDurationMs != null && Date.now() >= state.phaseStartedAt + candidate.personalDurationMs;
+    if (personalDone) ticket = candidate;
+  } else if (state.status === "idle") {
+    ticket = getMostRecentStartedTicket(db, locationId, mode, user.id, Date.now());
+  }
+
+  if (!ticket || ticket.stamp !== null || !ticket.stayedFullBlock) return;
+  stampTicket(db, locationId, mode, user.id, ticket.cycleStartAt, "completed");
+  logRoomAction(db, locationId, identityLabel(user, socketId), "Auto-stamped ticket as completed after disconnecting without checking out.");
 }

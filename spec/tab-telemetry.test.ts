@@ -130,11 +130,14 @@ it(
       await withTimeout(sawClear, 5000, "watcher to see the resident's dot clear");
 
       // Confirming must not demote: the table stays in focus and the
-      // resident can still act on it.
+      // resident can still act on it. Kudos is now allowed during focus too
+      // (item 3), so a bogus recipient id clears the phase gate and fails on
+      // recipient lookup instead — not_found, not not_breaking — which is
+      // itself proof the resident is still authorized and active post-confirm.
       const sawKudosRejection = once<{ error: string; action: string }>(resident, "room:error");
       resident.emit("room:send-kudos", { toUserId: -1, emoji: "⚡" });
-      const payload = await withTimeout(sawKudosRejection, 5000, "room:error for kudos during focus");
-      expect(payload).toEqual({ error: "not_breaking", action: "room:send-kudos" });
+      const payload = await withTimeout(sawKudosRejection, 5000, "room:error for kudos to an unknown recipient");
+      expect(payload).toEqual({ error: "not_found", action: "room:send-kudos" });
     } finally {
       resident.close();
       watcher.close();

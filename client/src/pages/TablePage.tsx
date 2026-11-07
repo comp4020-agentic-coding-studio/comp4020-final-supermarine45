@@ -15,6 +15,7 @@ import { TableDashboard } from "../components/TableDashboard";
 import { PresentRoster } from "../components/PresentRoster";
 import { BreakModal } from "../components/BreakModal";
 import { CheckInModal } from "../components/CheckInModal";
+import { EarlyFinishModal } from "../components/EarlyFinishModal";
 import { StuckQueue } from "../components/StuckQueue";
 import { Whiteboard } from "../components/Whiteboard";
 import { PeerReview } from "../components/PeerReview";
@@ -62,7 +63,7 @@ export function TablePage() {
     confirmCheckIn,
     reconnect,
     leave,
-  } = useTableSocket(slug, mode);
+  } = useTableSocket(slug, mode, refresh);
 
   const [pseudonymInput, setPseudonymInput] = useState("");
   const [queuedReboard, setQueuedReboard] = useState<{ body: string; personalDurationMinutes?: number } | null>(null);
@@ -74,6 +75,12 @@ export function TablePage() {
 
   const { chimeEnabled } = useChimePreference(me, refresh);
   usePhaseNotifications(room, me?.id, chimeEnabled, now);
+
+  // Tracks the one ticket id a user has dismissed the early-finish modal for
+  // (via "Keep working") so it doesn't reappear every render for the same
+  // ticket — mirrors usePhaseNotifications.ts's personalNudgedTicketIdRef
+  // guard, but as dismissible UI state rather than a one-shot notification.
+  const [dismissedEarlyFinishId, setDismissedEarlyFinishId] = useState<number | null>(null);
 
   const prevStatusRef = useRef<RoomStatus | undefined>(undefined);
   useEffect(() => {
@@ -94,6 +101,12 @@ export function TablePage() {
 
   const myUserId = me?.id;
   const myTicket = room?.tickets.find((t) => t.userId === myUserId) ?? joined?.myTicket ?? null;
+  const personalDone =
+    room?.timer.status === "focus" &&
+    myTicket?.personalDurationMs != null &&
+    now >= myTicket.cycleStartAt + myTicket.personalDurationMs;
+  const showEarlyFinish =
+    !isShadow && personalDone && myTicket?.stamp == null && myTicket?.id !== dismissedEarlyFinishId;
   const unboardedRoster = (room?.roster ?? []).filter((r) => !(room?.tickets ?? []).some((t) => t.userId === r.userId));
   const canPlan = !!me && !me.isGuest;
   // Solo Gate and Open Collab both read as OLED Black per the design system
@@ -377,6 +390,18 @@ export function TablePage() {
         {room?.timer.status === "focus" && pendingCheckIn && !isShadow && (
           <motion.div key="checkin-modal">
             <CheckInModal deadlineAt={pendingCheckIn.deadlineAt} onConfirm={confirmCheckIn} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showEarlyFinish && (
+          <motion.div key="early-finish-modal">
+            <EarlyFinishModal
+              myTicket={myTicket}
+              onStamp={stampTicket}
+              onDismiss={() => setDismissedEarlyFinishId(myTicket?.id ?? null)}
+            />
           </motion.div>
         )}
       </AnimatePresence>
