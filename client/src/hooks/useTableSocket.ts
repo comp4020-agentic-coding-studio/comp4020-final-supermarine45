@@ -233,10 +233,21 @@ export function useLobbySocket(): import("../types").LobbyLocation[] | null {
     function onUpdate(payload: import("../types").LobbyLocation[]): void {
       setLocations(payload);
     }
+    function requestSnapshot(): void {
+      socket.emit("lobby:join");
+    }
     socket.on("lobby:update", onUpdate);
+    // "connect" covers a fresh/dropped-then-restored connection; the shared
+    // socket (getSocket()'s module-level singleton) usually already satisfies
+    // `socket.connected` on remount after SPA navigation, so that case needs
+    // its own explicit request — otherwise this page shows whatever the
+    // socket last saw until some unrelated user action happens to broadcast.
+    socket.on("connect", requestSnapshot);
     if (!socket.connected) socket.connect();
+    else requestSnapshot();
     return () => {
       socket.off("lobby:update", onUpdate);
+      socket.off("connect", requestSnapshot);
     };
   }, []);
 

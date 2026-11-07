@@ -219,11 +219,12 @@ const presence = new Map<string, Map<string, Presence>>();
 // transition (idle-check, end-of-focus, or end-of-break — see the scheduler
 // below). Every table always has exactly one armed, even while idle.
 const scheduledTransitions = new Map<string, NodeJS.Timeout>();
-// tableKey -> the one-off timeout that forces a re-broadcast at a mode's
-// solo->collab split point. Deliberately separate from scheduledTransitions:
-// this one never changes DB state, it just makes the subphase flip show up
-// live instead of waiting for some other event to trigger a broadcast.
-const subphaseTimers = new Map<string, NodeJS.Timeout>();
+// tableKey -> the one or two one-off timeouts that force a re-broadcast
+// around a mode's solo->collab split point (see armSubphaseTimer). Separate
+// from scheduledTransitions for the same reason checkinTimers is: these
+// never change DB state, they just make the subphase flip show up live
+// instead of waiting for some other event to trigger a broadcast.
+const subphaseTimers = new Map<string, NodeJS.Timeout[]>();
 // tableKey -> the two one-off timeouts that fire a check-in ping at
 // CHECKIN_OFFSETS_MIN into a focus block. Separate from scheduledTransitions
 // for the same reason subphaseTimers is: these never touch DB state, they
@@ -356,9 +357,9 @@ function timerPayload(db: DatabaseSync, locationId: number, mode: ActivityMode):
 // "lobby" room regardless of what page it's on, so enriching this payload
 // with a per-mode breakdown is what feeds the ModePicker's live per-mode
 // counts with zero extra events or rooms to join.
-function broadcastLobby(io: Server, db: DatabaseSync): void {
+function lobbySummary(db: DatabaseSync) {
   const locations = listLocations(db);
-  const summary = locations.map((location) => {
+  return locations.map((location) => {
     const modes = ACTIVITY_MODES.map((mode) => {
       const state = getTable(db, location.id, mode);
       return {
@@ -385,7 +386,10 @@ function broadcastLobby(io: Server, db: DatabaseSync): void {
       upcomingCount: countUpcomingSessions(db, location.id),
     };
   });
-  io.to("lobby").emit("lobby:update", summary);
+}
+
+function broadcastLobby(io: Server, db: DatabaseSync): void {
+  io.to("lobby").emit("lobby:update", lobbySummary(db));
 }
 
 // Exported so routes/schedule.ts can re-broadcast after planning or
@@ -434,7 +438,7 @@ function clearTableTimer(key: string): void {
   if (existing) clearTimeout(existing);
   scheduledTransitions.delete(key);
   const subphase = subphaseTimers.get(key);
-  if (subphase) clearTimeout(subphase);
+  if (subphase) subphase.forEach(clearTimeout);
   subphaseTimers.delete(key);
   // Easy to miss: without clearing this too, a rapid idle<->focus<->break
   // transition (e.g. in tests) would leak a stale fallback timer or let it
@@ -492,22 +496,46 @@ function armNextTransition(io: Server, db: DatabaseSync, locationId: number, mod
   );
 }
 
-// A one-off timeout purely to force a live re-broadcast at the solo->collab
-// split instant — no DB write, nothing to self-heal after a restart (a
-// restart during 'focus' just means clients recompute the current subphase
-// on their next render, same as computeSubphase already does on every
-// broadcast).
+// Forces a live re-broadcast at the solo->collab split instant — no DB
+// write, nothing to self-heal after a restart (a restart during 'focus' just
+// means clients recompute the current subphase on their next render, same as
+// computeSubphase already does on every broadcast).
+//
+// Writing and Problem each get a second, independent broadcast for free at
+// (or right after) the same split instant — armPeerReviewTimer and
+// armWhiteboardFallbackTimer both call broadcastRoom too, plus every
+// toggle-stuck/draft/highlight action during their collab window does the
+// same. Concept Pitch has no such mechanic at all (confirmed: no pitch-
+// specific socket handler exists), so it alone depends on this one timer
+// firing and actually being delivered to every connected socket. A QA
+// campaign surfaced exactly this: a purely passive Concept Pitch observer
+// stuck seeing "Solo" for a full real hour after the one broadcast here
+// apparently never reached it. Rather than chase an unconfirmed root cause
+// in the delivery path, arm a second, independent catch-up broadcast shortly
+// after the split for Pitch specifically (10s in real time, or half of a
+// shortened test-speed collab window, whichever is smaller — still well
+// inside the collab window either way), so a single missed delivery is never
+// fatal.
 function armSubphaseTimer(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, state: RoomState): void {
   const split = splitMsFor(mode);
   if (split === null) return;
   const key = tableKey(locationId, mode);
   const splitAt = state.phaseStartedAt! + split;
-  const delay = splitAt - Date.now();
-  if (delay <= 0) return;
-  subphaseTimers.set(
-    key,
-    setTimeout(() => broadcastRoom(io, db, locationId, mode), delay),
-  );
+  const now = Date.now();
+  const fire = () => broadcastRoom(io, db, locationId, mode);
+  const timers: NodeJS.Timeout[] = [];
+
+  const primaryDelay = splitAt - now;
+  if (primaryDelay > 0) timers.push(setTimeout(fire, primaryDelay));
+
+  if (mode === "pitch") {
+    const collabWindowMs = state.phaseEndAt! - splitAt;
+    const retryAt = splitAt + Math.max(1000, Math.min(collabWindowMs / 2, 10_000));
+    const retryDelay = retryAt - now;
+    if (retryDelay > 0 && retryAt < state.phaseEndAt!) timers.push(setTimeout(fire, retryDelay));
+  }
+
+  if (timers.length > 0) subphaseTimers.set(key, timers);
 }
 
 // Nobody should be able to silently deny the whole table a Whiteboard just by
@@ -840,6 +868,20 @@ interface JoinedTable {
 export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
   io.on("connection", (socket: Socket) => {
     socket.join("lobby");
+    // Without this, a freshly-connected socket only ever learns the lobby's
+    // state reactively (the next time someone else's action happens to call
+    // broadcastLobby) — a viewer landing on an already-occupied room could
+    // see "0 people" indefinitely if nothing else nudges a broadcast.
+    socket.emit("lobby:update", lobbySummary(db));
+    // The client's socket is a shared singleton that survives SPA navigation
+    // (see useTableSocket.ts's getSocket()), so remounting the Landing/
+    // Building/Room page after visiting other pages finds an already-
+    // connected socket — the snapshot above never re-fires, and the page is
+    // stuck with whatever occupancy it last saw until some *other* user's
+    // action happens to trigger broadcastLobby. A hard refresh masked this
+    // by forcing a brand-new connection. Mirrors room:join's existing
+    // already-connected re-request pattern (see reconnect() below).
+    socket.on("lobby:join", () => socket.emit("lobby:update", lobbySummary(db)));
     let joined: JoinedTable | null = null;
     let isShadow = false;
 

@@ -1,12 +1,12 @@
 # What I built: Shut Up and Read
-**Shut Up and Read** is a productivity app inspired by ANUSA's *Shut Up and Write* (SUAW) initiative. It brings students together for focused writing sessions using the Pomodoro Technique: 50 minutes of work followed by a 10-minute break for coffee or informal discussion:
+**Shut Up and Read** is a productivity app inspired by ANUSA's *Shut Up and Write* (SUAW) initiative. It brings students together for focused writing sessions using the Pomodoro Technique: 50 minutes work followed by 10-minute break:
 
 https://web.archive.org/web/20230305234720/https://thesiswhisperer.com/shut-up-and-write/
 
-Building on this concept, the project transforms it into a digital platform connecting students across campus for structured group study sessions while preserving individual focus time.
+Building on this, the project creates a digital platform connecting students across campus for structured group study sessions while preserving individual focus time.
 
 ## Target User:
-The app is designed for ANU students, who can choose from four distinct *Ways of Working*, depending on their study objectives:
+The app is designed for ANU students, who can choose from four *Ways of Working*, depending on their study objectives:
 
 - **Silent Focus:** Individual work for the full 50 minutes, without breakouts or discussions.
 - **Writing Clinic:** Individual drafting for 40 minutes, followed by a 10-minute peer-feedback session in a breakout room.
@@ -14,11 +14,11 @@ The app is designed for ANU students, who can choose from four distinct *Ways of
 - **Problem-Solving:** Individual problem-solving for 40 minutes, followed by a 10-minute collaborative session to solve and check answers using a shared whiteboard.
 
 ## Observed Problem:
-The idea stemmed from my difficulty finding study partners or organising study groups (*organising costs*, (Kirschner, Paas, & Kirschner, 2011)) and finding friends willing to dedicate time to studying.
+The idea stemmed from my difficulty finding study partners or organising study groups (i.e., *organising costs* concept, (Kirschner, Paas, & Kirschner, 2011)).
 
-Moreover, simply bringing students together does not guarantee productive collaboration. In discussion with the TA, it was highlighted that ANUSA's existing SUAW initiative does not sufficiently facilitate interaction between participants, such as exchanging study tips or discussing ways to improve their writing.
+Moreover, simply bringing students together does not guarantee productive collaboration. In discussion with the TA, it was highlighted that ANUSA's existing SUAW initiative does not sufficiently facilitate interaction between participants (e.g., discussing study tips).
 
-In response to this feedback, and in line with the project's multi-user requirements, I designed four key principles:
+In response to this feedback, and following the project's multi-user requirements, I designed these principles:
 
 1. **Self-reflection**
 
@@ -30,13 +30,13 @@ In response to this feedback, and in line with the project's multi-user requirem
 
 3. **Deliverable Tickets**
 
-   Unstructured group work can lead to *social loafing*, whereby individuals reduce their effort when working collectively (Karau & Williams, 1993). To mitigate this and keep individual accountability, students are prompted to submit a *Deliverable Ticket* outlining their intended contribution to the group's objectives before each session. 
+   Unstructured group work can lead to *social loafing*, whereby individuals reduce their effort when working collectively ((Karau & Williams, 1993), (Ghaleb, 2024)). To mitigate this and keep individual accountability, students are prompted to submit a *Deliverable Ticket* outlining their intended contribution to the group's objectives before each session. 
 
 4. **Interactive Breakout Sessions**
 
    Rather than relying on passive interaction, the app incorporates structured breakout activities that require active participation. For example, the *Writing Clinic* mode facilitates peer-review exchanges, allowing students to swap their drafts and provide feedback to one another.
 
-## The Idea (i.e., features and their rationale)
+## The Idea
 Beyond these core features, the app's design also considers several practical challenges that could affect students' ability to participate consistently and maintain focus.
 
 1. **User Activeness**
@@ -53,7 +53,7 @@ Beyond these core features, the app's design also considers several practical ch
 
 4. **Limiting Visual and Social Distractions**
 
-   To retain focus during individual time, multi-user interactions are deliberately restricted to a small set of lightweight actions, such as sending _Strava_ styled *Kudos*. This allows students to acknowledge and encourage one another without interrupting their workflow.
+   To retain focus during individual time, multi-user interactions are deliberately restricted to lightweight actions (e.g., sending _Strava_ styled *Kudos*). This allows students to encourage one another without interrupting their workflow.
 
 In addition to the user-facing features, I implemented a logging system:
 
@@ -61,6 +61,10 @@ In addition to the user-facing features, I implemented a logging system:
 2. **Activity:** Records user activities and interactions.
 3. **Status:** Monitors the server's operational status.
 
+
+## What I chose NOT to built
+- **Strict Tab-tracking.** Earlier builds penalised a user for switching tab (i.e., getting distracted), which is counterintuitive should the user need to work actively (in another tab).
+- **A phone layout.** The app is designed to be in a library (desk-setting). As such, it is optimized for desktop viewing, instead of a phone.
 
 ## References:
 Ghaleb, B. D. S. (2024). Social loafing: Understanding, mitigating, and enhancing group performance. International Journal of Scientific Multidisciplinary Research, 2(9), 1321–1328. https://doi.org/10.55927/ijsmr.v2i9.10975

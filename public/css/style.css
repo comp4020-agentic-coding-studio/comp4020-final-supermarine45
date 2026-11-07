@@ -1317,6 +1317,7 @@ button.reset-btn {
   margin: 0 auto;
   padding: 2.5rem 1.5rem 4rem;
   line-height: 1.65;
+  overflow-wrap: break-word;
 }
 
 .doc h1, .doc h2, .doc h3 {

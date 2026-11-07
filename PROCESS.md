@@ -34,19 +34,19 @@ The app was designed with simplicity in mind. I based these design choices on th
 (cite prompt)
 
 The final design choices include:
-1. **Simple timer:** The clock intentionally hides ticking seconds (e.g., displaying only `42m`) to prevent unecessary distration to the user.
+1. **Simple timer:** The timer intentionally ommits ticking seconds to prevent unecessary distration to the user.
 
-2. **Consistent color-coding:** (Fill the color here), for consistency.
+2. **Consistent color-coding:** amber, sage, and terracota, with simple light/dark chrome theme of the background.
 
-3. **Typography:** Simple monospace fonts (`SF Mono`, `JetBrains Mono`) were used consistenty across the app.
+3. **Typography:** Monospace fonts (`SF Mono`, `JetBrains Mono`) were chosen for simplicity and consistency across the app.
 
 
 ## Stack choices
-The project utilized the following stackL
-* **Frontend:** React / Next.js (ADD why).
-* **Styling & Animation:** Tailwind CSS (ADD why).
-* **Real-time Syncing:** Socket.IO used to manage session countdown, active user tracking, and real-time whiteboard discussions. 
-* **Testing:** Vitest for the spec suite (evaluating server state) and Playwright for smoke testing the functional flows. 
+**Backend:** Express + Socket.IO + node:sqlite ([8d2402c](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/8d2402ccfa4fe5e6f9c4999954f0037241777823)).
+
+Socket.IO was chosen because the server initiates each phase change on its own timer, not in response to a client request — a plain request/response API can't push like that. node:sqlite was sufficient for a small project with one Fly volume, without needing a dedicated DB server.
+
+**Frontend:** Initially vanilla-JS was used. This became hard to maintain as more functionality was added (i.e., ways of working), since each new phase meant another manual code update. The frontend was then migrated to React, Vite, and Tailwind ([61b9ec3](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/61b9ec3c036612200a120a58a9fd35e075b2786f)).
 
 ## Agentic workflow
 Throughout the project, I discussed and refined my ideas by firstly doing self-research, along the concepts of collaborative learning, individual learning, social pressures, etc. From this, I then gathered several features that I would like engineered. 
