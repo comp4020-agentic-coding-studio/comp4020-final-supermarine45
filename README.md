@@ -34,7 +34,7 @@ In response to this feedback, and following the project's multi-user requirement
 
 4. **Interactive Breakout Sessions**
 
-   Rather than relying on passive interaction, the app incorporates structured breakout activities that require active participation. For example, the *Writing Clinic* mode facilitates peer-review exchanges, allowing students to swap their drafts and provide feedback to one another.
+   The app encourages active participation through structured breakout activities. For example, *Writing Clinic* enables students to exchange drafts and provide peer feedback.
 
 ## The Idea
 Beyond these core features, the app's design also considers several practical challenges that could affect students' ability to participate consistently and maintain focus.
@@ -68,5 +68,5 @@ In addition to the user-facing features, I implemented a logging system:
 
 
 
-* references found in references.md.
+* literature references found in references.md.
 
