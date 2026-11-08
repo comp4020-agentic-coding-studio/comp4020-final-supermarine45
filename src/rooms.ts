@@ -1004,8 +1004,9 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       if (!joined) return;
       const user = currentIdentity();
       if (!user || isShadow || isDemoted()) {
-        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:checkin-confirm. Rejected.");
-        socket.emit("room:error", { error: "unauthorized", action: "room:checkin-confirm" });
+        const reason = isDemoted() ? "demoted" : "unauthorized";
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:checkin-confirm. Rejected.`);
+        socket.emit("room:error", { error: reason, action: "room:checkin-confirm" });
         return;
       }
       confirmCheckin(io, db, joined.locationId, joined.mode, socket.id);
@@ -1015,8 +1016,9 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       if (!joined) return;
       const user = currentIdentity();
       if (!user || isShadow || isDemoted()) {
-        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:submit-ticket. Rejected.");
-        socket.emit("room:error", { error: "unauthorized", action: "room:submit-ticket" });
+        const reason = isDemoted() ? "demoted" : "unauthorized";
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:submit-ticket. Rejected.`);
+        socket.emit("room:error", { error: reason, action: "room:submit-ticket" });
         return;
       }
       const error = ticketBodyError(body);
@@ -1075,8 +1077,9 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       if (!joined) return;
       const user = currentIdentity();
       if (!user || isShadow || isDemoted()) {
-        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:pivot-ticket. Rejected.");
-        socket.emit("room:error", { error: "unauthorized", action: "room:pivot-ticket" });
+        const reason = isDemoted() ? "demoted" : "unauthorized";
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:pivot-ticket. Rejected.`);
+        socket.emit("room:error", { error: reason, action: "room:pivot-ticket" });
         return;
       }
       const error = ticketBodyError(body);
@@ -1107,8 +1110,9 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       if (!joined) return;
       const user = currentIdentity();
       if (!user || isShadow || isDemoted()) {
-        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:toggle-stuck. Rejected.");
-        socket.emit("room:error", { error: "unauthorized", action: "room:toggle-stuck" });
+        const reason = isDemoted() ? "demoted" : "unauthorized";
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:toggle-stuck. Rejected.`);
+        socket.emit("room:error", { error: reason, action: "room:toggle-stuck" });
         return;
       }
       const { locationId, mode } = joined;
@@ -1126,8 +1130,9 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       if (!joined) return;
       const user = currentIdentity();
       if (!user || isShadow || isDemoted()) {
-        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:stamp-ticket. Rejected.");
-        socket.emit("room:error", { error: "unauthorized", action: "room:stamp-ticket" });
+        const reason = isDemoted() ? "demoted" : "unauthorized";
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:stamp-ticket. Rejected.`);
+        socket.emit("room:error", { error: reason, action: "room:stamp-ticket" });
         return;
       }
       const { locationId, mode } = joined;
@@ -1165,8 +1170,9 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       if (!joined) return;
       const user = currentIdentity();
       if (!user || isShadow || isDemoted()) {
-        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:send-kudos. Rejected.");
-        socket.emit("room:error", { error: "unauthorized", action: "room:send-kudos" });
+        const reason = isDemoted() ? "demoted" : "unauthorized";
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:send-kudos. Rejected.`);
+        socket.emit("room:error", { error: reason, action: "room:send-kudos" });
         return;
       }
       const { locationId, mode } = joined;
@@ -1200,8 +1206,9 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       if (!joined) return;
       const user = currentIdentity();
       if (!user || isShadow || isDemoted()) {
-        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:launch-whiteboard. Rejected.");
-        socket.emit("room:error", { error: "unauthorized", action: "room:launch-whiteboard" });
+        const reason = isDemoted() ? "demoted" : "unauthorized";
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:launch-whiteboard. Rejected.`);
+        socket.emit("room:error", { error: reason, action: "room:launch-whiteboard" });
         return;
       }
       const { locationId, mode } = joined;
@@ -1218,8 +1225,9 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       if (!joined) return;
       const user = currentIdentity();
       if (!user || isShadow || isDemoted()) {
-        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:whiteboard-paste. Rejected.");
-        socket.emit("room:error", { error: "unauthorized", action: "room:whiteboard-paste" });
+        const reason = isDemoted() ? "demoted" : "unauthorized";
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:whiteboard-paste. Rejected.`);
+        socket.emit("room:error", { error: reason, action: "room:whiteboard-paste" });
         return;
       }
       const { locationId, mode } = joined;
@@ -1244,8 +1252,9 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       if (!joined) return;
       const user = currentIdentity();
       if (!user || isShadow || isDemoted()) {
-        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:whiteboard-highlight. Rejected.");
-        socket.emit("room:error", { error: "unauthorized", action: "room:whiteboard-highlight" });
+        const reason = isDemoted() ? "demoted" : "unauthorized";
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:whiteboard-highlight. Rejected.`);
+        socket.emit("room:error", { error: reason, action: "room:whiteboard-highlight" });
         return;
       }
       const { locationId, mode } = joined;
@@ -1303,8 +1312,9 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       if (!joined) return;
       const user = currentIdentity();
       if (!user || isShadow || isDemoted()) {
-        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:submit-draft. Rejected.");
-        socket.emit("room:error", { error: "unauthorized", action: "room:submit-draft" });
+        const reason = isDemoted() ? "demoted" : "unauthorized";
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:submit-draft. Rejected.`);
+        socket.emit("room:error", { error: reason, action: "room:submit-draft" });
         return;
       }
       const { locationId, mode } = joined;
@@ -1339,8 +1349,9 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
         if (!joined) return;
         const user = currentIdentity();
         if (!user || isShadow || isDemoted()) {
-          logRoomAction(db, joined.locationId, identityLabel(user, socket.id), "Attempted unauthorized room:peer-highlight. Rejected.");
-          socket.emit("room:error", { error: "unauthorized", action: "room:peer-highlight" });
+          const reason = isDemoted() ? "demoted" : "unauthorized";
+          logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:peer-highlight. Rejected.`);
+          socket.emit("room:error", { error: reason, action: "room:peer-highlight" });
           return;
         }
         const { locationId, mode } = joined;

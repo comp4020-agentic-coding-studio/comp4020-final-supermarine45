@@ -188,11 +188,15 @@ it(
       await withTimeout(residentGone, CHECKIN_GRACE_MS + TABLE_CYCLE_MS + 10000, "roster to drop the demoted user");
 
       // The demoted socket never disconnected, but it's lost write access —
-      // proving this is a real server-side demotion, not cosmetic.
+      // proving this is a real server-side demotion, not cosmetic. Distinct
+      // "demoted" error code (not the generic "unauthorized" a Shadow socket
+      // gets) so the client can show copy that actually explains what
+      // happened, instead of a confusing "you need a name" message to
+      // someone who already has one.
       const rejection = once<{ error: string; action: string }>(resident, "room:error");
       resident.emit("room:submit-ticket", { body: "Attempting after demotion" });
       const payload = await withTimeout(rejection, 5000, "room:error after demotion");
-      expect(payload).toEqual({ error: "unauthorized", action: "room:submit-ticket" });
+      expect(payload).toEqual({ error: "demoted", action: "room:submit-ticket" });
     } finally {
       resident.close();
       watcher.close();

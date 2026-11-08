@@ -1,7 +1,6 @@
 ## Process: Final modifications made
-For the final weeks of the project, I realized that the product, though satisfying the functional requirements, still lacked cohesion and flow. As such, I focused the last few weeks on refining the flow of the actual product itself. I backtracked and redefined the app's purpose, its target users, and designed the workflow on how a user can use this product. This includes the introduction of the four "ways of working", and features specifically tuned to suit this. The workflow were designed as follows:
+For the final weeks of the project, I realized that the product, though satisfying the functional requirements, still lacked cohesion and flow. As such, I focused the last few weeks on refining the flow of the actual product itself. I backtracked and redefined the app's purpose, its target users, and designed the workflow on how a user can use this product. This includes the introduction of the four "ways of working", and features specifically tuned to suit this:
 > "I would like to reshape the prototype.
->
 > The Concept: "Shut up and Read"
 > The Problem: ANU students want the cognitive benefits of group study (increased persistence, shared cognitive load, and motivation), but struggle with the logistics of scheduling and the friction of actual group work (distraction, social loafing, and shared misconceptions).
 > The Solution: A lightweight, desktop-only web application that facilitates structured, on-demand study sessions at ANU library hubs. Inspired by the Shut-up-and-Write (SUAW) 50/10 Pomodoro format, the app instantly matches students sitting in the same library for an hour of highly structured, side-by-side productivity."
@@ -24,22 +23,12 @@ this creates an overall clearer, easier to use workflow for better user onboardi
 3. **Individual working time**, followed by **Interactive Breakouts**, based on earlier discussion with the TA during the crit:
 > "The 15/35 Split-Phase Gate (Active Collab Modes Only)
 > How it works: In Problem-Solving Mode, the 50-minute clock automatically locks the first 15 minutes into an amber Solo Retrieval Phase where talking is prohibited. At minute 15, a soft haptic pulse shifts the screen accent to green, unlocking the 35-minute Collaborative Synthesis Phase.
-> Research Grounding: Solves Collaborative Inhibition (Weldon & Bellinger, 1997). Students must encode foundational material and map out their own retrieval cues alone first before pooling working memory with a peer.
->
-> ... The 3-Card Guided SUAW Break Stack
-> ...
-> Research Grounding: Directly resolves your TA's critique of SUAW (that standard sessions don't teach students how to write or study better) using Socially Shared Regulation of Learning (SSRL) (Järvelä & Hadwin, 2013)."
 
 5. **User activeness**. Earlier iterations enforced strict activity monitoring by detecting when users switched tabs. However, this proved counterproductive, as it restricted users from working efficiently across multiple windows (e.g., drafting a paper in another tab). I therefore replaced this approach with background activity tracking, using periodic pop-up check-ins to monitor user engagement without interrupting their workflow.
 
 > "An issue with the current 'inactivity': It does not allow users to switch tabs, which students often do (i.e., if they code, etc). I want to implement the following:
->
-> ...
-> 3. Redesigning Accountability: The "Check-In" Ping
 > As we can't always track tab visibility (because they should be in other tabs), how do we prevent social loafing and ensure they haven't just walked away from their laptop?
->
 > We replace the hard 'inactivity' tracking we currently have implemented with Micro-Check-Ins.
->
 > The Mechanic: Twice during the 50-minute block (e.g., at minute 20 and minute 35), the web app checks that the user is still active on their computer (the computer is not idle or sleep)."
 
 ([367b0a6](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/367b0a61d995db1ea54e542215d4fe2cad9e10ca))
@@ -47,16 +36,9 @@ this creates an overall clearer, easier to use workflow for better user onboardi
 6. **Self-reflection at the end of a session**
 > "Guided Meta-Breaks (SSRL Integration): To address the lack of structural improvement in standard SUAW sessions, the 10-minute break begins with a 90-second modal. This prompts Socially Shared Regulation of Learning (SSRL) by asking students to share how they studied (e.g., "What was your main bottleneck?") before unlocking the remaining time for unstructured socializing."
 
-to address the lack of _feedback_ aspect of the current ANUSA's _SUAW_ program.
-
 7. **Strava-style Gamification** with user stats (i.e., Verified Focus Hours (VFH)), and _Kudos_. 
 > "The "Deep Work Velocity" Receipt & Reliability Score (strava style)
 > How it works: Instead of childish gamification (streaks, coins, or public leaderboards), the profile tab tracks two utility metrics: a Show-Up Reliability % (flaking drops you below 80% and restricts advance booking) and a Personal Velocity Log showing how many tickets you complete per hour at each ANU library.
->
-> ... Verified Focus Hours (VFH): Accumulates 1 VFH only if the user stays for the full 50-minute block and actively clicks Completed or Partial on their ticket during the Break Modal.
-> ... Asynchronous "Kudos": During the Break Modal, users can click a single low-friction emoji (e.g., ⚡, ☕, 🧠) next to a peer's ticket to acknowledge their hard work."
-
-([61b9ec3](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/61b9ec3c036612200a120a58a9fd35e075b2786f))
 
 Aside from addressing the _persistence_ requirement of the project, these adresses user accountability. The distraction-free user interaction design was deliberate, as a productive-focused app.
 
@@ -77,20 +59,16 @@ The final design choices include:
 
 Socket.IO was chosen because the server initiates each phase change on its own timer, not in response to a client request — a plain request/response API can't push like that. node:sqlite was sufficient for a small project with one Fly volume, without needing a dedicated DB server.
 
-**Frontend:** Initially vanilla-JS was used. This became hard to maintain as more functionality was added (i.e., ways of working), since each new phase meant another manual code update. The frontend was then migrated to React, Vite, and Tailwind ([61b9ec3](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/61b9ec3c036612200a120a58a9fd35e075b2786f)).
+**Frontend:** Initially vanilla-JS was used. This became hard to maintain as more functionality was added (i.e., ways of working), since each new phase meant another manual code update. The frontend was then migrated to React, Vite, and Tailwind.
 
 ## Agentic workflow
 Throughout the project, I discussed and refined my ideas by firstly doing self-research, along the concepts of collaborative learning, individual learning, social pressures, etc. From this, I then gathered several features that I would like engineered. 
 
-I passed these features initially to the agent in Plan mode, for the agents to refine. After iterative planning, the agent built the code. This resulted in the initial prototype: 
-
-([8d2402c](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/8d2402ccfa4fe5e6f9c4999954f0037241777823))
+I passed these features initially to the agent in Plan mode, for the agents to refine. After iterative planning, the agent built the code.
 
 At each step of the process, I also requested the agent to construct specific test cases and test files, to test on each of the features. For example:
 
 > "make some test scripts to test all the functionality and outline what you have done in this redesign"
-
-([61b9ec3](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/61b9ec3c036612200a120a58a9fd35e075b2786f))
 
 A main drawback I observed with the agentic flow is that agents are quick to recommend features, which may be superfluous. As such, it is crucial to really constrain the initial feature ideation of the agent.
 
@@ -102,16 +80,13 @@ This prevented the agent from hallucinating out-of-scope features. I.e., complex
 > From the agent's own approved plan, "Guided Pod Flow: Leader, Kickoff/Debrief/Vote, Stuck Queue, Whiteboard, 5-min start cadence":
 > "Leader gates exactly two actions: `room:launch-whiteboard` (Problem-Solving, during Collab) and `room:initiate-vote` (during Break)... Vote is a per-ticket column... Quorum rule for a valid vote: at least half of that cycle's boarded tickets must have cast a vote at all, and among those cast, yes > no."
 
-This was later stripped back down to a simpler reboard streak with no group vote involved ([b8c1471](https://github.com/comp4020-agentic-coding-studio/comp4020-final-supermarine45/commit/b8c1471b92ffb5eb4fc3afe56b01ab71d2d3fbc0)), after I pushed back:
-> "Instead of voting, I think this choice should be left to individual users. The same way user can join or leave anytime. What do you think?"
-
 I decided to do this iterative development, as I observed Claude is not very good working on large chunks of a project at once. 
 
 ## Trade-off
-The trade-off of this workflow is the development process is relatively slow. In particular, as I must initially do manual research and make notes on what specific features and workflow I would like in the app. This is notably slower than if I had used the agent itself to ideate and discuss everything from scratch.
+The trade-off of this workflow is the development process is relatively slow, as I must initially do manual research and scoped the features to include in the app. This is slower than if I had used the agent itself to ideate and discuss everything from scratch.
 
-However, this is a trade-off I was willing to take, as it results in each step moving in the right direction, rather than AI slop (as in earlier crits). It also helped with better overall credit utilization.
+However, this is a trade-off I wanted to take, as it results in each step moving in the right direction, rather than AI slop (as in earlier crits). It also helped with better overall credit utilization.
 
-I believe this is a good software development practice as well, as it results in a product which I can actually take ownership of, and understand fully, though the bulk of the development work was executed through an Agentic workflow.
+I believe this is good software development practice as well, as it results in a product which I can actually take ownership of, and understand fully, though the bulk of the development work was executed through an Agentic workflow.
 
 

@@ -28,6 +28,7 @@ const ERROR_COPY: Record<string, string> = {
   not_found: "That location or mode doesn't exist.",
   table_full: "This table is full for the next cycle (max 6). Try another mode, or wait for a seat to free up.",
   unauthorized: "You need a name to do that — join in below.",
+  demoted: "You've missed a check-in, so you were moved back to Shadow (watch-only) for this cycle. Rejoin next cycle to participate again.",
   wrong_mode: "The stuck flag only applies in Problem-Solving mode.",
   not_breaking: "You can only check off your ticket during the break.",
 };
@@ -74,7 +75,7 @@ export function TablePage() {
   const [autoJoinError, setAutoJoinError] = useState<string | null>(null);
 
   const { chimeEnabled } = useChimePreference(me, refresh);
-  usePhaseNotifications(room, me?.id, chimeEnabled, now);
+  usePhaseNotifications(room, me?.id, chimeEnabled, now, pendingCheckIn);
 
   // Tracks the one ticket id a user has dismissed the early-finish modal for
   // (via "Keep working") so it doesn't reappear every render for the same
@@ -148,6 +149,15 @@ export function TablePage() {
   function handleLeave(): void {
     leave();
     navigate(`/room/${slug}`);
+  }
+
+  // Stamping from the early-finish modal means the user is done for good —
+  // per the user's own "we should be out of the session after" expectation,
+  // this should behave like Leave the room, not just dismiss the modal and
+  // strand them on a table that's still running for everyone else.
+  function handleEarlyFinishStamp(stamp: "completed" | "partial" | "pivoted"): void {
+    stampTicket(stamp);
+    handleLeave();
   }
 
   const mine = (room?.upcoming ?? []).filter((s) => me && s.username === me.username);
@@ -399,7 +409,7 @@ export function TablePage() {
           <motion.div key="early-finish-modal">
             <EarlyFinishModal
               myTicket={myTicket}
-              onStamp={stampTicket}
+              onStamp={handleEarlyFinishStamp}
               onDismiss={() => setDismissedEarlyFinishId(myTicket?.id ?? null)}
             />
           </motion.div>

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { RoomUpdatePayload } from "../types";
+import type { CheckinRequestPayload, RoomUpdatePayload } from "../types";
 
 // Foreground-only (Notification API from an open-but-backgrounded tab) — no
 // Service Worker, no push subscriptions. Chimes are muted unless the caller
@@ -36,11 +36,18 @@ export function usePhaseNotifications(
   myUserId: number | undefined,
   chimeEnabled: boolean,
   now: number,
+  pendingCheckIn?: CheckinRequestPayload | null,
 ): void {
   const prevStatusRef = useRef<string | undefined>(undefined);
   const prevSubphaseRef = useRef<string | null | undefined>(undefined);
   const prevWhiteboardOpenedAtRef = useRef<number | null | undefined>(undefined);
   const prevKudosCountRef = useRef<number | undefined>(undefined);
+  // A check-in request is only visible in-tab (CheckInModal) otherwise —
+  // someone legitimately working in another tab/app (exactly who this app
+  // is for) would never see it, miss the grace window, and get silently
+  // demoted. Fires once per deadline so backgrounding the tab still pages
+  // the user via the OS, same as every other notify() call here.
+  const notifiedCheckinDeadlineRef = useRef<number | undefined>(undefined);
   // Fires once per personal-duration ticket (keyed by ticket id) — a shorter
   // personal block chosen at board time, see TicketForm's duration preset.
   // Purely an attention cue: doesn't pause, stamp, or remove the ticket, and
@@ -91,4 +98,12 @@ export function usePhaseNotifications(
     if (chimeEnabled) playChime();
     notify("⏱️ Personal block done", `Your ${Math.round(myTicket.personalDurationMs / 60_000)}m block is up — the table keeps going.`);
   }, [room, myUserId, chimeEnabled, now]);
+
+  useEffect(() => {
+    if (!pendingCheckIn) return;
+    if (notifiedCheckinDeadlineRef.current === pendingCheckIn.deadlineAt) return;
+    notifiedCheckinDeadlineRef.current = pendingCheckIn.deadlineAt;
+    if (chimeEnabled) playChime();
+    notify("👀 Still here?", "Click to confirm you're still focused, or you'll be moved back to Shadow.");
+  }, [pendingCheckIn, chimeEnabled]);
 }
