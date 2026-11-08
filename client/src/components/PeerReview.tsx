@@ -1,7 +1,8 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PeerReviewHighlight, PeerReviewHighlightKind } from "../types";
 
 const MAX_DRAFT_WORDS = 200;
+const MAX_COMMENT_WORDS = 100;
 
 const HIGHLIGHT_KINDS: { kind: PeerReviewHighlightKind; label: string; dot: string; mark: string }[] = [
   { kind: "strong", label: "Strong", dot: "bg-sage", mark: "bg-sage/30" },
@@ -17,6 +18,14 @@ function draftWordError(text: string): string | null {
   return null;
 }
 
+function commentWordError(text: string): string | null {
+  const trimmed = text.trim();
+  if (trimmed.length < 1) return "write a comment first";
+  const words = trimmed.split(/\s+/).filter(Boolean).length;
+  if (words > MAX_COMMENT_WORDS) return `keep it to ${MAX_COMMENT_WORDS} words (currently ${words})`;
+  return null;
+}
+
 // Writing Clinic-only Peer Review portal (plan §2), opened by the server at
 // minute 40 of the Collab Phase. Adapts Whiteboard.tsx's mirror-div technique
 // for a read-only surface — reviewers never type into the author's text, only
@@ -29,6 +38,7 @@ export function PeerReview({
   assignment,
   onSubmitDraft,
   onHighlight,
+  onSubmitReviewComment,
 }: {
   peerReviewOpenedAt: number | null;
   myDraftSubmitted: boolean;
@@ -36,11 +46,23 @@ export function PeerReview({
   assignment: { authorId: number; authorUsername: string; text: string; highlights: PeerReviewHighlight[] } | null;
   onSubmitDraft: (text: string) => void;
   onHighlight: (authorId: number, start: number, end: number, kind: PeerReviewHighlightKind) => void;
+  onSubmitReviewComment: (authorId: number, body: string) => void;
 }) {
   const [draftInput, setDraftInput] = useState("");
   const [draftError, setDraftError] = useState<string | null>(null);
   const [activeKind, setActiveKind] = useState<PeerReviewHighlightKind>("strong");
+  const [commentInput, setCommentInput] = useState("");
+  const [commentError, setCommentError] = useState<string | null>(null);
+  const [commentSent, setCommentSent] = useState(false);
   const textRef = useRef<HTMLDivElement>(null);
+
+  // A fresh assignment (new cycle, new rotation) means any comment state
+  // from the previous author no longer applies.
+  useEffect(() => {
+    setCommentInput("");
+    setCommentError(null);
+    setCommentSent(false);
+  }, [assignment?.authorId]);
 
   if (!peerReviewOpenedAt) return null;
 
@@ -53,6 +75,19 @@ export function PeerReview({
     }
     onSubmitDraft(draftInput.trim());
     setDraftError(null);
+  }
+
+  function handleSubmitComment(e: React.FormEvent): void {
+    e.preventDefault();
+    if (!assignment) return;
+    const wordErr = commentWordError(commentInput);
+    if (wordErr) {
+      setCommentError(wordErr);
+      return;
+    }
+    onSubmitReviewComment(assignment.authorId, commentInput.trim());
+    setCommentError(null);
+    setCommentSent(true);
   }
 
   function handleMouseUp(): void {
@@ -147,6 +182,24 @@ export function PeerReview({
           >
             {renderHighlighted(assignment.text, assignment.highlights)}
           </div>
+
+          <form onSubmit={handleSubmitComment} className="mt-3 space-y-2">
+            <textarea
+              value={commentInput}
+              onChange={(e) => {
+                setCommentInput(e.target.value);
+                setCommentError(null);
+                setCommentSent(false);
+              }}
+              placeholder={`Optional: leave a short comment (≤${MAX_COMMENT_WORDS} words)`}
+              className="h-20 w-full resize-none rounded-md border border-white/15 bg-transparent p-3 font-mono text-sm text-white outline-none focus:border-sage/50"
+            />
+            {commentError && <p className="text-xs text-amber">{commentError}</p>}
+            {commentSent && !commentError && <p className="text-xs opacity-60">Comment sent.</p>}
+            <button type="submit" className="rounded-md border border-white/15 px-4 py-2 text-xs font-medium opacity-80">
+              Send comment
+            </button>
+          </form>
         </div>
       )}
 

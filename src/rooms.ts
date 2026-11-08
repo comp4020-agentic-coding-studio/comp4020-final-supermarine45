@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Server, Socket } from "socket.io";
-import type { ActivityMode, Identity, Location, RoomState, RoomStatus, Ticket } from "./db.js";
+import type { ActivityMode, Identity, Location, RoomState, RoomStatus, Ticket, TicketComment } from "./db.js";
 import {
   ACTIVITY_MODES,
   addKudos,
@@ -8,6 +8,7 @@ import {
   countUpcomingSessions,
   deleteUserBuddies,
   deleteUserChatMessages,
+  deleteUserCommentsGiven,
   deleteUserKudosGiven,
   deleteUserRow,
   deleteUserScheduledSessions,
@@ -21,6 +22,7 @@ import {
   getPreviousTicket,
   getTable,
   getTicket,
+  getTicketComments,
   incrementStreak,
   incrementTableRollovers,
   isGuest,
@@ -34,6 +36,7 @@ import {
   stampTicket,
   toggleStuck,
   upsertTicket,
+  upsertTicketComment,
 } from "./db.js";
 import type { TicketStamp } from "./db.js";
 import { createPseudonymIdentity } from "./auth.js";
@@ -294,8 +297,32 @@ const peerReviews = new Map<string, PeerReviewState>();
 // tableKey -> the one-off timer that auto-opens the Peer Review portal at
 // minute 40 — see armPeerReviewTimer.
 const peerReviewTimers = new Map<string, NodeJS.Timeout>();
+
+// Concept Pitch (Collab only): opens automatically at minute 40, same
+// pattern as Peer Review — mirrors its draft-swap submission+N-way-rotation
+// mechanic so a listener has something short to follow along with, since the
+// pitch itself is delivered out loud, not typed. No highlighting counterpart
+// (confirmed: pitches are spoken, not dragged-over text) — comment-box only.
+interface PitchSubmission {
+  userId: number;
+  username: string;
+  text: string;
+}
+interface PitchState {
+  openedAt: number | null;
+  submissions: Map<number, PitchSubmission>; // keyed by pitcherId
+  assignments: Map<number, number>; // listenerUserId -> pitcherUserId (N-way rotation)
+}
+const pitches = new Map<string, PitchState>();
+// tableKey -> the one-off timer that auto-opens the Concept Pitch portal at
+// minute 40 — see armPitchTimer.
+const pitchTimers = new Map<string, NodeJS.Timeout>();
+
 const MAX_DRAFT_WORDS = 200;
 const MAX_PEER_REVIEW_HIGHLIGHTS = 100;
+// Shared across every optional comment box (Writing Clinic, Concept Pitch,
+// Problem-Solving free-form) — short feedback, not a second draft.
+const MAX_COMMENT_WORDS = 100;
 
 function shadowCount(locationId: number, mode: ActivityMode): number {
   return shadowCounts.get(tableKey(locationId, mode))?.size ?? 0;
@@ -424,24 +451,54 @@ export function broadcastRoom(io: Server, db: DatabaseSync, locationId: number, 
   const key = tableKey(locationId, mode);
   const tickets = listTickets(db, locationId, mode, cycleStartAt);
   const whiteboard = whiteboards.get(key);
-  io.to(roomName(locationId, mode)).emit("room:update", {
+  const ticketsWithComments = tickets.map((ticket) => ({
+    ...ticket,
+    kudos: getKudosForTicket(db, ticket.id),
+    comments: getTicketComments(db, ticket.id),
+  }));
+  const base = {
     mode,
     timer: timerPayload(db, locationId, mode),
     cycleStartAt,
     roster: roster(locationId, mode),
     shadowCount: shadowCount(locationId, mode),
-    tickets: tickets.map((ticket) => ({
-      ...ticket,
-      kudos: getKudosForTicket(db, ticket.id),
-    })),
     leaderUserId: leaderUserId(tickets),
     whiteboardOpenedAt: whiteboard?.openedAt ?? null,
     whiteboardText: whiteboard?.text ?? "",
     whiteboardHighlights: whiteboard?.highlights ?? [],
     peerReviewOpenedAt: peerReviews.get(key)?.openedAt ?? null,
+    pitchOpenedAt: pitches.get(key)?.openedAt ?? null,
     capacity: TABLE_CAPACITY,
     upcoming: listUpcomingSessions(db, locationId),
-  });
+  };
+  const redactedTickets = ticketsWithComments.map((t) => ({ ...t, comments: [] as TicketComment[] }));
+  // Comments are private feedback — visible only to the ticket's own owner,
+  // never broadcast table-wide (unlike kudos). When nobody's ticket this
+  // cycle carries a comment, this is exactly the old single-broadcast path.
+  // Otherwise, every owner of a commented-on ticket gets one targeted emit
+  // with their own comments attached, and everyone else (including
+  // shadows, who never own a ticket) gets the redacted broadcast via
+  // `.except(...)` — so no socket ever receives two room:update events for
+  // the same broadcastRoom call.
+  const anyComments = ticketsWithComments.some((t) => t.comments.length > 0);
+  if (!anyComments) {
+    io.to(roomName(locationId, mode)).emit("room:update", { ...base, tickets: redactedTickets });
+    return;
+  }
+  const table = presence.get(key);
+  const ownerSocketIds: string[] = [];
+  if (table) {
+    for (const entry of table.values()) {
+      const ownsCommented = ticketsWithComments.some((t) => t.userId === entry.user.id && t.comments.length > 0);
+      if (!ownsCommented) continue;
+      ownerSocketIds.push(entry.socketId);
+      const myTickets = ticketsWithComments.map((t) =>
+        t.userId === entry.user.id ? t : { ...t, comments: [] as TicketComment[] },
+      );
+      io.to(entry.socketId).emit("room:update", { ...base, tickets: myTickets });
+    }
+  }
+  io.to(roomName(locationId, mode)).except(ownerSocketIds).emit("room:update", { ...base, tickets: redactedTickets });
 }
 
 // ---------------------------------------------------------------------------
@@ -467,6 +524,9 @@ function clearTableTimer(key: string): void {
   const peerReview = peerReviewTimers.get(key);
   if (peerReview) clearTimeout(peerReview);
   peerReviewTimers.delete(key);
+  const pitch = pitchTimers.get(key);
+  if (pitch) clearTimeout(pitch);
+  pitchTimers.delete(key);
   const checkins = checkinTimers.get(key);
   if (checkins) checkins.forEach(clearTimeout);
   checkinTimers.delete(key);
@@ -496,6 +556,7 @@ function armNextTransition(io: Server, db: DatabaseSync, locationId: number, mod
       armSubphaseTimer(io, db, locationId, mode, state);
       armWhiteboardTimer(io, db, locationId, mode, state);
       armPeerReviewTimer(io, db, locationId, mode, state);
+      armPitchTimer(io, db, locationId, mode, state);
       armCheckinTimers(io, db, locationId, mode, state);
     }
     return;
@@ -617,6 +678,33 @@ function armPeerReviewTimer(io: Server, db: DatabaseSync, locationId: number, mo
   peerReviewTimers.set(key, setTimeout(openNow, delay));
 }
 
+// Opens the Concept Pitch portal automatically at the Collab split point
+// (minute 40) — same pattern as armPeerReviewTimer, no manual "Launch" step.
+// Concept Pitch only — the only mode with this mechanic at all.
+function armPitchTimer(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, state: RoomState): void {
+  if (mode !== "pitch") return;
+  const split = splitMsFor(mode);
+  if (split === null) return;
+  const key = tableKey(locationId, mode);
+  const openAt = state.phaseStartedAt! + split;
+  const delay = openAt - Date.now();
+  const openNow = () => {
+    if (pitches.get(key)?.openedAt != null) return;
+    pitches.set(key, { openedAt: Date.now(), submissions: new Map(), assignments: new Map() });
+    logSystemAction(db, locationId, "System", `Concept Pitch opened for ${mode}.`);
+    broadcastRoom(io, db, locationId, mode);
+  };
+  if (delay <= 0) {
+    // Re-armed (e.g. rearmTimers after a server restart) after minute 40
+    // already passed, but we're still mid-focus — open immediately rather
+    // than silently never opening for the rest of this cycle, same rationale
+    // as armPeerReviewTimer.
+    openNow();
+    return;
+  }
+  pitchTimers.set(key, setTimeout(openNow, delay));
+}
+
 // Arms one table-wide timer per distinct check-in fire time across every
 // Personal Shorter Duration preset (see allCheckinFireOffsetsMs) — not one
 // timer set per user — and at each firing, filters recipients by whichever
@@ -660,10 +748,12 @@ function beginScheduledFocus(
     armNextTransition(io, db, locationId, mode);
     return;
   }
-  // Fresh Whiteboard/Peer Review per cycle — a prior cycle's scratch text or
-  // draft/highlight state must never leak into the next one's Collab window.
+  // Fresh Whiteboard/Peer Review/Pitch per cycle — a prior cycle's scratch
+  // text or draft/highlight/pitch state must never leak into the next one's
+  // Collab window.
   whiteboards.delete(tableKey(locationId, mode));
   peerReviews.delete(tableKey(locationId, mode));
+  pitches.delete(tableKey(locationId, mode));
   setTableState(db, locationId, mode, "focus", cycleStartAt, cycleStartAt + FOCUS_DURATION_MS, FOCUS_DURATION_MS);
   logSystemAction(db, locationId, "System", `Focus began for ${mode} with ${boarded} boarded ticket(s).`);
   broadcastRoom(io, db, locationId, mode);
@@ -777,6 +867,7 @@ export function deleteAccount(io: Server, db: DatabaseSync, userId: number): voi
   deleteUserChatMessages(db, userId);
   deleteUserTickets(db, userId);
   deleteUserKudosGiven(db, userId);
+  deleteUserCommentsGiven(db, userId);
   deleteUserBuddies(db, userId);
   deleteUserStreaks(db, userId);
   deleteUserSessions(db, userId);
@@ -836,6 +927,15 @@ function peerReviewSubphaseOk(db: DatabaseSync, locationId: number, mode: Activi
   return computeSubphase(mode, Date.now() - state.phaseStartedAt!) === "collab";
 }
 
+// Shared gate for every Concept Pitch handler, exact same shape as
+// peerReviewSubphaseOk — Concept Pitch only, mid-focus, Collab subphase.
+function pitchSubphaseOk(db: DatabaseSync, locationId: number, mode: ActivityMode): boolean {
+  if (mode !== "pitch") return false;
+  const state = getTable(db, locationId, mode);
+  if (state.status !== "focus") return false;
+  return computeSubphase(mode, Date.now() - state.phaseStartedAt!) === "collab";
+}
+
 function draftTextError(text: unknown): string | null {
   if (typeof text !== "string") return "invalid_draft";
   const trimmed = text.trim();
@@ -845,25 +945,49 @@ function draftTextError(text: unknown): string | null {
   return null;
 }
 
+// Shared validator for every optional comment box (Writing Clinic, Concept
+// Pitch, Problem-Solving free-form). "Optional" describes the feature — a
+// table-mate never has to use it, and nothing else waits on it — not the
+// body of a comment someone actually chose to send, which still needs to be
+// a real, non-empty, ≤100-word note like any other handler's input.
+function commentTextError(body: unknown): string | null {
+  if (typeof body !== "string") return "invalid_comment";
+  const trimmed = body.trim();
+  if (trimmed.length < 1) return "invalid_comment";
+  const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+  if (wordCount > MAX_COMMENT_WORDS) return "invalid_comment";
+  return null;
+}
+
 // N-way shuffle (Decision: not reciprocal pairs): shuffle every current
 // submitter into a random order, then each reviews the next person's draft
 // (wrapping around) — A reviews B's, B reviews C's, C reviews A's. For n >= 3
 // this guarantees nobody reviews the person reviewing them; at n === 2 mutual
 // review is unavoidable and is the only well-defined assignment. Recomputed
 // from scratch on every new submission (fine for a lightweight classroom
-// feature — a late submitter simply reshuffles the whole rotation).
-function recomputePeerReviewAssignments(state: PeerReviewState): void {
-  const authorIds = [...state.drafts.keys()];
-  state.assignments.clear();
-  if (authorIds.length < 2) return;
-  const shuffled = [...authorIds];
+// feature — a late submitter simply reshuffles the whole rotation). Shared by
+// Peer Review (Writing Clinic) and the analogous pitch-listening rotation
+// (Concept Pitch) — same shape, different submitter pool.
+function assignNWayRotation(ids: number[]): Map<number, number> {
+  const assignments = new Map<number, number>();
+  if (ids.length < 2) return assignments;
+  const shuffled = [...ids];
   for (let i = shuffled.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
   for (let i = 0; i < shuffled.length; i++) {
-    state.assignments.set(shuffled[i], shuffled[(i + 1) % shuffled.length]);
+    assignments.set(shuffled[i], shuffled[(i + 1) % shuffled.length]);
   }
+  return assignments;
+}
+
+function recomputePeerReviewAssignments(state: PeerReviewState): void {
+  state.assignments = assignNWayRotation([...state.drafts.keys()]);
+}
+
+function recomputePitchAssignments(state: PitchState): void {
+  state.assignments = assignNWayRotation([...state.submissions.keys()]);
 }
 
 // Delivers per-user Peer Review data via targeted emits (same precedent as
@@ -896,6 +1020,37 @@ function broadcastPeerReviewState(io: Server, locationId: number, mode: Activity
       io.to(entry.socketId).emit("room:peer-review-highlights", {
         highlights: state.highlights.get(entry.user.id) ?? [],
       });
+    }
+  }
+}
+
+// Concept Pitch counterpart to broadcastPeerReviewState — same targeted-emit
+// precedent, minus the highlights half (Pitch has no highlighting tool).
+// Delivers each listener their assigned pitcher's short written summary, and
+// a lightweight ack to every pitcher who has submitted (there's no
+// highlights payload to double as that signal here, unlike Peer Review's
+// room:peer-review-highlights). Called after a pitch submission (assignments
+// may have changed).
+function broadcastPitchState(io: Server, locationId: number, mode: ActivityMode): void {
+  const key = tableKey(locationId, mode);
+  const state = pitches.get(key);
+  if (!state) return;
+  const table = presence.get(key);
+  if (!table) return;
+  for (const entry of table.values()) {
+    const pitcherId = state.assignments.get(entry.user.id);
+    if (pitcherId !== undefined) {
+      const submission = state.submissions.get(pitcherId);
+      if (submission) {
+        io.to(entry.socketId).emit("room:pitch-assignment", {
+          pitcherId,
+          pitcherUsername: submission.username,
+          text: submission.text,
+        });
+      }
+    }
+    if (state.submissions.has(entry.user.id)) {
+      io.to(entry.socketId).emit("room:pitch-submitted");
     }
   }
 }
@@ -990,6 +1145,7 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       // submission or highlight — room:update alone doesn't carry this
       // per-user-scoped data (see broadcastPeerReviewState's own comment).
       if (user) broadcastPeerReviewState(io, joinedLocationId, joinedMode);
+      if (user) broadcastPitchState(io, joinedLocationId, joinedMode);
     });
 
     socket.on("set_pseudonym", ({ pseudonym }: { pseudonym?: string }) => {
@@ -1143,13 +1299,26 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       broadcastRoom(io, db, locationId, mode);
     });
 
-    socket.on("room:stamp-ticket", ({ stamp }: { stamp?: TicketStamp }) => {
-      if (!joined) return;
+    // The client immediately navigates away after stamping from the
+    // Early-Finish modal (see TablePage's handleEarlyFinishStamp), which
+    // unmounts before a room:update broadcast would otherwise be the signal
+    // to refresh the client's cached me.vfhCount (AuthContext) — a plain
+    // fire-and-forget emit can't be waited on through a navigation. The ack
+    // (called on every exit path, success or rejection) closes that race:
+    // by the time the client's stampTicket() promise resolves, any
+    // stampTicket (src/db.ts) write above it has already committed, so the
+    // subsequent /api/me refresh is guaranteed to see the new count.
+    socket.on("room:stamp-ticket", ({ stamp }: { stamp?: TicketStamp }, ack?: () => void) => {
+      if (!joined) {
+        ack?.();
+        return;
+      }
       const user = currentIdentity();
       if (!user || isShadow || isDemoted()) {
         const reason = isDemoted() ? "demoted" : "unauthorized";
         logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:stamp-ticket. Rejected.`);
         socket.emit("room:error", { error: reason, action: "room:stamp-ticket" });
+        ack?.();
         return;
       }
       const { locationId, mode } = joined;
@@ -1166,6 +1335,7 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
       const eligible = state.status === "break" || (state.status === "focus" && personalDone);
       if (!eligible || (stamp !== "completed" && stamp !== "partial" && stamp !== "pivoted")) {
         socket.emit("room:error", { error: "not_breaking", action: "room:stamp-ticket" });
+        ack?.();
         return;
       }
       if (stamp === "pivoted") {
@@ -1175,12 +1345,14 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
         const ticket = getTicket(db, locationId, mode, user.id, state.phaseStartedAt!);
         if (!ticket || ticket.pivotedAt == null) {
           socket.emit("room:error", { error: "not_pivoted", action: "room:stamp-ticket" });
+          ack?.();
           return;
         }
       }
       stampTicket(db, locationId, mode, user.id, state.phaseStartedAt!, stamp);
       logRoomAction(db, locationId, identityLabel(user, socket.id), `Stamped ticket as ${stamp}.`);
       broadcastRoom(io, db, locationId, mode);
+      ack?.();
     });
 
     socket.on("room:send-kudos", ({ toUserId, emoji }: { toUserId?: number; emoji?: string }) => {
@@ -1385,6 +1557,172 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
         broadcastPeerReviewState(io, locationId, mode);
       },
     );
+
+    // Writing Clinic: an optional, private ≤100-word comment a reviewer
+    // leaves on the author's draft they're assigned — separate from
+    // highlighting, and never required to get paired at all (only submitting
+    // a draft via room:submit-draft gates that). Lands on the author's own
+    // ticket for this cycle (upsertTicketComment), visible only to them via
+    // broadcastRoom's owner-only comment delivery.
+    socket.on("room:submit-review-comment", ({ authorId, body }: { authorId?: number; body?: string }) => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        const reason = isDemoted() ? "demoted" : "unauthorized";
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:submit-review-comment. Rejected.`);
+        socket.emit("room:error", { error: reason, action: "room:submit-review-comment" });
+        return;
+      }
+      const { locationId, mode } = joined;
+      if (!peerReviewSubphaseOk(db, locationId, mode)) {
+        socket.emit("room:error", { error: "wrong_mode", action: "room:submit-review-comment" });
+        return;
+      }
+      const state = peerReviews.get(tableKey(locationId, mode));
+      if (!state || state.openedAt === null) {
+        socket.emit("room:error", { error: "not_open", action: "room:submit-review-comment" });
+        return;
+      }
+      if (state.assignments.get(user.id) !== authorId) {
+        socket.emit("room:error", { error: "not_assigned", action: "room:submit-review-comment" });
+        return;
+      }
+      const error = commentTextError(body);
+      if (error) {
+        socket.emit("room:error", { error, action: "room:submit-review-comment" });
+        return;
+      }
+      const table = getTable(db, locationId, mode);
+      const authorTicket = getTicket(db, locationId, mode, authorId as number, table.phaseStartedAt!);
+      if (!authorTicket) {
+        socket.emit("room:error", { error: "not_found", action: "room:submit-review-comment" });
+        return;
+      }
+      upsertTicketComment(db, authorTicket.id, user.id, user.username, (body as string).trim());
+      logRoomAction(db, locationId, identityLabel(user, socket.id), `Left a comment on '${authorTicket.username}'s draft.`);
+      broadcastRoom(io, db, locationId, mode);
+    });
+
+    // Concept Pitch: a short written summary of your pitch, submitted once
+    // the portal is open — the pitch itself is still delivered out loud, this
+    // just gives a listener something to follow along with. Re-submitting
+    // replaces it and reshuffles the rotation, same precedent as
+    // room:submit-draft.
+    socket.on("room:submit-pitch", ({ text }: { text?: string }) => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        const reason = isDemoted() ? "demoted" : "unauthorized";
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:submit-pitch. Rejected.`);
+        socket.emit("room:error", { error: reason, action: "room:submit-pitch" });
+        return;
+      }
+      const { locationId, mode } = joined;
+      if (!pitchSubphaseOk(db, locationId, mode)) {
+        socket.emit("room:error", { error: "wrong_mode", action: "room:submit-pitch" });
+        return;
+      }
+      const key = tableKey(locationId, mode);
+      const state = pitches.get(key);
+      if (!state || state.openedAt === null) {
+        socket.emit("room:error", { error: "not_open", action: "room:submit-pitch" });
+        return;
+      }
+      const error = draftTextError(text);
+      if (error) {
+        socket.emit("room:error", { error, action: "room:submit-pitch" });
+        return;
+      }
+      state.submissions.set(user.id, { userId: user.id, username: user.username, text: (text as string).trim() });
+      recomputePitchAssignments(state);
+      logRoomAction(db, locationId, identityLabel(user, socket.id), "Submitted a pitch summary.");
+      broadcastPitchState(io, locationId, mode);
+    });
+
+    // Concept Pitch: an optional, private ≤100-word comment a listener leaves
+    // on the pitcher they're assigned to — never required to get paired at
+    // all (only submitting a summary via room:submit-pitch gates that). No
+    // highlighting counterpart here (pitches are spoken, not dragged-over
+    // text). Lands on the pitcher's own ticket for this cycle, visible only
+    // to them via broadcastRoom's owner-only comment delivery.
+    socket.on("room:submit-pitch-comment", ({ pitcherId, body }: { pitcherId?: number; body?: string }) => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        const reason = isDemoted() ? "demoted" : "unauthorized";
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:submit-pitch-comment. Rejected.`);
+        socket.emit("room:error", { error: reason, action: "room:submit-pitch-comment" });
+        return;
+      }
+      const { locationId, mode } = joined;
+      if (!pitchSubphaseOk(db, locationId, mode)) {
+        socket.emit("room:error", { error: "wrong_mode", action: "room:submit-pitch-comment" });
+        return;
+      }
+      const state = pitches.get(tableKey(locationId, mode));
+      if (!state || state.openedAt === null) {
+        socket.emit("room:error", { error: "not_open", action: "room:submit-pitch-comment" });
+        return;
+      }
+      if (state.assignments.get(user.id) !== pitcherId) {
+        socket.emit("room:error", { error: "not_assigned", action: "room:submit-pitch-comment" });
+        return;
+      }
+      const error = commentTextError(body);
+      if (error) {
+        socket.emit("room:error", { error, action: "room:submit-pitch-comment" });
+        return;
+      }
+      const table = getTable(db, locationId, mode);
+      const pitcherTicket = getTicket(db, locationId, mode, pitcherId as number, table.phaseStartedAt!);
+      if (!pitcherTicket) {
+        socket.emit("room:error", { error: "not_found", action: "room:submit-pitch-comment" });
+        return;
+      }
+      upsertTicketComment(db, pitcherTicket.id, user.id, user.username, (body as string).trim());
+      logRoomAction(db, locationId, identityLabel(user, socket.id), `Left a comment on '${pitcherTicket.username}'s pitch.`);
+      broadcastRoom(io, db, locationId, mode);
+    });
+
+    // Problem-Solving: free-form, no pairing/rotation — any boarded user may
+    // leave an optional, private ≤100-word comment on any other table-mate's
+    // ticket this cycle (self-comments rejected, same precedent as
+    // room:send-kudos's self_kudos check). Lands on the recipient's own
+    // ticket, visible only to them via broadcastRoom's owner-only comment
+    // delivery — never broadcast table-wide.
+    socket.on("room:submit-ticket-comment", ({ toUserId, body }: { toUserId?: number; body?: string }) => {
+      if (!joined) return;
+      const user = currentIdentity();
+      if (!user || isShadow || isDemoted()) {
+        const reason = isDemoted() ? "demoted" : "unauthorized";
+        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:submit-ticket-comment. Rejected.`);
+        socket.emit("room:error", { error: reason, action: "room:submit-ticket-comment" });
+        return;
+      }
+      const { locationId, mode } = joined;
+      if (!whiteboardSubphaseOk(db, locationId, mode)) {
+        socket.emit("room:error", { error: "wrong_mode", action: "room:submit-ticket-comment" });
+        return;
+      }
+      if (toUserId === user.id) {
+        socket.emit("room:error", { error: "self_comment", action: "room:submit-ticket-comment" });
+        return;
+      }
+      const error = commentTextError(body);
+      if (error) {
+        socket.emit("room:error", { error, action: "room:submit-ticket-comment" });
+        return;
+      }
+      const state = getTable(db, locationId, mode);
+      const recipientTicket = getTicket(db, locationId, mode, toUserId as number, state.phaseStartedAt!);
+      if (!recipientTicket) {
+        socket.emit("room:error", { error: "not_found", action: "room:submit-ticket-comment" });
+        return;
+      }
+      upsertTicketComment(db, recipientTicket.id, user.id, user.username, (body as string).trim());
+      logRoomAction(db, locationId, identityLabel(user, socket.id), `Left a comment on '${recipientTicket.username}'s ticket.`);
+      broadcastRoom(io, db, locationId, mode);
+    });
 
     socket.on("room:leave", () => {
       if (!joined) return;

@@ -11,7 +11,6 @@ import { useChimePreference } from "../hooks/useChimePreference";
 import { cancelSchedule, planSession } from "../api";
 import { PhaseBanner } from "../components/PhaseBanner";
 import { KudosToasts } from "../components/KudosToasts";
-import { PipTimerButton } from "../components/PipTimerButton";
 import { TicketForm } from "../components/TicketForm";
 import { TableDashboard } from "../components/TableDashboard";
 import { PresentRoster } from "../components/PresentRoster";
@@ -21,6 +20,7 @@ import { EarlyFinishModal } from "../components/EarlyFinishModal";
 import { StuckQueue } from "../components/StuckQueue";
 import { Whiteboard } from "../components/Whiteboard";
 import { PeerReview } from "../components/PeerReview";
+import { ConceptPitch } from "../components/ConceptPitch";
 import { Callout } from "../components/Callout";
 import { Button } from "../components/Button";
 import { ticketBodyError } from "../validation";
@@ -62,6 +62,12 @@ export function TablePage() {
     whiteboardCursor,
     submitDraft,
     peerHighlight,
+    submitReviewComment,
+    pitchAssignment,
+    myPitchSubmitted,
+    submitPitch,
+    submitPitchComment,
+    submitTicketComment,
     confirmCheckIn,
     reconnect,
     leave,
@@ -153,12 +159,28 @@ export function TablePage() {
     navigate(`/room/${slug}`);
   }
 
+  // `me.vfhCount` (AuthContext) is fetched once per page load and otherwise
+  // only on login/logout/account changes — it never re-fetches just because
+  // a stamp landed. Without awaiting the stamp's ack before anything else
+  // happens, a user who stamps "Completed" and then leaves (BreakModal's own
+  // "Leave the room" link, or the early-finish flow below navigating away
+  // immediately) sees their old, pre-stamp VFH count afterward, which reads
+  // as "VFH wasn't awarded" even though the server credited it immediately.
+  // stampTicket's promise only resolves once the server has actually
+  // committed the stamp (see room:stamp-ticket's ack in src/rooms.ts), so
+  // refresh() here is guaranteed to see the new count regardless of whatever
+  // navigation follows.
+  async function handleStamp(stamp: "completed" | "partial" | "pivoted"): Promise<void> {
+    await stampTicket(stamp);
+    await refresh();
+  }
+
   // Stamping from the early-finish modal means the user is done for good —
   // per the user's own "we should be out of the session after" expectation,
   // this should behave like Leave the room, not just dismiss the modal and
   // strand them on a table that's still running for everyone else.
-  function handleEarlyFinishStamp(stamp: "completed" | "partial" | "pivoted"): void {
-    stampTicket(stamp);
+  async function handleEarlyFinishStamp(stamp: "completed" | "partial" | "pivoted"): Promise<void> {
+    await handleStamp(stamp);
     handleLeave();
   }
 
@@ -196,12 +218,6 @@ export function TablePage() {
           className={`mt-6 space-y-6 rounded-xl transition-colors duration-700 ${isDark ? "bg-oled p-6" : ""}`}
         >
           <PhaseBanner timer={room?.timer ?? { status: "idle", phaseEndAt: null, durationMs: null, subphase: null }} now={now} />
-
-          {room && room.timer.status === "focus" && (
-            <div className="flex justify-end">
-              <PipTimerButton timer={room.timer} now={now} />
-            </div>
-          )}
 
           {isShadow ? (
             <form
@@ -294,6 +310,7 @@ export function TablePage() {
             onToggleStuck={toggleStuck}
             onSendKudos={sendKudos}
             onPivotTicket={pivotTicket}
+            onSubmitTicketComment={submitTicketComment}
           />
 
           {room && mode === "problem" && room.timer.status === "focus" && (
@@ -323,6 +340,17 @@ export function TablePage() {
               assignment={peerReviewAssignment}
               onSubmitDraft={submitDraft}
               onHighlight={peerHighlight}
+              onSubmitReviewComment={submitReviewComment}
+            />
+          )}
+
+          {room && mode === "pitch" && room.timer.status === "focus" && room.timer.subphase === "collab" && (
+            <ConceptPitch
+              pitchOpenedAt={room.pitchOpenedAt}
+              myPitchSubmitted={myPitchSubmitted}
+              assignment={pitchAssignment}
+              onSubmitPitch={submitPitch}
+              onSubmitPitchComment={submitPitchComment}
             />
           )}
 
@@ -388,7 +416,7 @@ export function TablePage() {
               myTicket={myTicket}
               tickets={room.tickets}
               myUserId={myUserId}
-              onStamp={stampTicket}
+              onStamp={handleStamp}
               onSendKudos={sendKudos}
               onReboard={(body, personalDurationMinutes) => setQueuedReboard({ body, personalDurationMinutes })}
               onLeave={handleLeave}

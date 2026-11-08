@@ -7,6 +7,7 @@ import type {
   PeerReviewAssignmentPayload,
   PeerReviewHighlightKind,
   PeerReviewHighlightsPayload,
+  PitchAssignmentPayload,
   PseudonymSetPayload,
   RoomError,
   RoomJoinedPayload,
@@ -33,10 +34,12 @@ export interface TableSocketState {
   peerReviewAssignment: PeerReviewAssignmentPayload | null;
   myPeerReviewHighlights: PeerReviewHighlightsPayload["highlights"];
   myDraftSubmitted: boolean;
+  pitchAssignment: PitchAssignmentPayload | null;
+  myPitchSubmitted: boolean;
   submitTicket: (body: string, personalDurationMinutes?: number) => void;
   pivotTicket: (body: string) => void;
   toggleStuck: () => void;
-  stampTicket: (stamp: "completed" | "partial" | "pivoted") => void;
+  stampTicket: (stamp: "completed" | "partial" | "pivoted") => Promise<void>;
   sendKudos: (toUserId: number, emoji: string) => void;
   setPseudonym: (pseudonym: string) => void;
   whiteboardPaste: (text: string) => void;
@@ -44,6 +47,10 @@ export interface TableSocketState {
   whiteboardCursor: (x: number, y: number) => void;
   submitDraft: (text: string) => void;
   peerHighlight: (authorId: number, start: number, end: number, kind: PeerReviewHighlightKind) => void;
+  submitReviewComment: (authorId: number, body: string) => void;
+  submitPitch: (text: string) => void;
+  submitPitchComment: (pitcherId: number, body: string) => void;
+  submitTicketComment: (toUserId: number, body: string) => void;
   confirmCheckIn: () => void;
   reconnect: () => void;
   leave: () => void;
@@ -90,6 +97,8 @@ export function useTableSocket(
   // room:peer-review-highlights event IS the signal (server only emits it to
   // sockets whose user already has a draft on file; see broadcastPeerReviewState).
   const [myDraftSubmitted, setMyDraftSubmitted] = useState(false);
+  const [pitchAssignment, setPitchAssignment] = useState<PitchAssignmentPayload | null>(null);
+  const [myPitchSubmitted, setMyPitchSubmitted] = useState(false);
   const cycleStartAtRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -103,6 +112,8 @@ export function useTableSocket(
     setPeerReviewAssignment(null);
     setMyPeerReviewHighlights([]);
     setMyDraftSubmitted(false);
+    setPitchAssignment(null);
+    setMyPitchSubmitted(false);
     cycleStartAtRef.current = undefined;
 
     function join(): void {
@@ -130,6 +141,8 @@ export function useTableSocket(
         setMyDraftSubmitted(false);
         setPeerReviewAssignment(null);
         setMyPeerReviewHighlights([]);
+        setPitchAssignment(null);
+        setMyPitchSubmitted(false);
       }
       setRoom(payload);
     }
@@ -160,6 +173,13 @@ export function useTableSocket(
       setMyDraftSubmitted(true);
       setMyPeerReviewHighlights(payload.highlights);
     }
+    // Targeted at this socket only — see src/rooms.ts's broadcastPitchState.
+    function onPitchAssignment(payload: PitchAssignmentPayload): void {
+      setPitchAssignment(payload);
+    }
+    function onPitchSubmitted(): void {
+      setMyPitchSubmitted(true);
+    }
 
     socket.on("connect", onConnect);
     socket.on("disconnect", onDisconnect);
@@ -171,6 +191,8 @@ export function useTableSocket(
     socket.on("room:checkin-request", onCheckinRequest);
     socket.on("room:peer-review-assignment", onPeerReviewAssignment);
     socket.on("room:peer-review-highlights", onPeerReviewHighlights);
+    socket.on("room:pitch-assignment", onPitchAssignment);
+    socket.on("room:pitch-submitted", onPitchSubmitted);
 
     if (socket.connected) onConnect();
     else setStatus("connecting");
@@ -186,6 +208,8 @@ export function useTableSocket(
       socket.off("room:checkin-request", onCheckinRequest);
       socket.off("room:peer-review-assignment", onPeerReviewAssignment);
       socket.off("room:peer-review-highlights", onPeerReviewHighlights);
+      socket.off("room:pitch-assignment", onPitchAssignment);
+      socket.off("room:pitch-submitted", onPitchSubmitted);
     };
   }, [slug, mode]);
 
@@ -200,11 +224,13 @@ export function useTableSocket(
     peerReviewAssignment,
     myPeerReviewHighlights,
     myDraftSubmitted,
+    pitchAssignment,
+    myPitchSubmitted,
     submitTicket: (body: string, personalDurationMinutes?: number) =>
       getSocket().emit("room:submit-ticket", { body, personalDurationMinutes }),
     pivotTicket: (body: string) => getSocket().emit("room:pivot-ticket", { body }),
     toggleStuck: () => getSocket().emit("room:toggle-stuck"),
-    stampTicket: (stamp) => getSocket().emit("room:stamp-ticket", { stamp }),
+    stampTicket: (stamp) => new Promise<void>((resolve) => getSocket().emit("room:stamp-ticket", { stamp }, resolve)),
     sendKudos: (toUserId, emoji) => getSocket().emit("room:send-kudos", { toUserId, emoji }),
     setPseudonym: (pseudonym: string) => getSocket().emit("set_pseudonym", { pseudonym }),
     whiteboardPaste: (text: string) => getSocket().emit("room:whiteboard-paste", { text }),
@@ -213,6 +239,13 @@ export function useTableSocket(
     submitDraft: (text: string) => getSocket().emit("room:submit-draft", { text }),
     peerHighlight: (authorId: number, start: number, end: number, kind: PeerReviewHighlightKind) =>
       getSocket().emit("room:peer-highlight", { authorId, start, end, kind }),
+    submitReviewComment: (authorId: number, body: string) =>
+      getSocket().emit("room:submit-review-comment", { authorId, body }),
+    submitPitch: (text: string) => getSocket().emit("room:submit-pitch", { text }),
+    submitPitchComment: (pitcherId: number, body: string) =>
+      getSocket().emit("room:submit-pitch-comment", { pitcherId, body }),
+    submitTicketComment: (toUserId: number, body: string) =>
+      getSocket().emit("room:submit-ticket-comment", { toUserId, body }),
     confirmCheckIn: () => {
       setPendingCheckIn(null);
       getSocket().emit("room:checkin-confirm");

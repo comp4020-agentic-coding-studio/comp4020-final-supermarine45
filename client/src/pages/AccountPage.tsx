@@ -314,6 +314,15 @@ function SessionRow({ entry: h }: { entry: UserHistoryEntry }) {
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-ink">{h.locationName}</p>
         <p className="truncate font-mono text-xs text-ink-muted">"{h.body}"</p>
+        {h.comments.length > 0 && (
+          <div className="mt-1 space-y-0.5">
+            {h.comments.map((c) => (
+              <p key={c.id} className="truncate font-mono text-xs italic text-ink-muted">
+                "{c.body}" — {c.fromUsername}
+              </p>
+            ))}
+          </div>
+        )}
       </div>
       <OutcomeBadge stamp={h.stamp} stayedFullBlock={h.stayedFullBlock} />
     </Link>

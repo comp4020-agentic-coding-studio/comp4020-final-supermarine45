@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { LifeBuoy } from "lucide-react";
+import { LifeBuoy, MessageSquare } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Avatar } from "./Avatar";
 import { PerimeterRing } from "./PerimeterRing";
@@ -19,6 +19,15 @@ const RIPPLE_MS = 800;
 // used as the duration label's fallback for tickets with no personal,
 // shorter duration of their own.
 const FULL_BLOCK_MS = 50 * 60_000;
+const MAX_COMMENT_WORDS = 100;
+
+function commentWordError(text: string): string | null {
+  const trimmed = text.trim();
+  if (trimmed.length < 1) return "write a comment first";
+  const words = trimmed.split(/\s+/).filter(Boolean).length;
+  if (words > MAX_COMMENT_WORDS) return `keep it to ${MAX_COMMENT_WORDS} words (currently ${words})`;
+  return null;
+}
 
 export function ringColor(timer: TimerPayload): string {
   if (timer.status === "break") return "#e07a5f";
@@ -67,6 +76,7 @@ export function TableDashboard({
   onToggleStuck,
   onSendKudos,
   onPivotTicket,
+  onSubmitTicketComment,
 }: {
   tickets: TicketWithKudos[];
   roster: RosterEntry[];
@@ -77,11 +87,35 @@ export function TableDashboard({
   onToggleStuck: () => void;
   onSendKudos: (toUserId: number, emoji: string) => void;
   onPivotTicket: (body: string) => void;
+  onSubmitTicketComment?: (toUserId: number, body: string) => void;
 }) {
   const [editingTicketId, setEditingTicketId] = useState<number | null>(null);
   const [pivotInput, setPivotInput] = useState("");
   const [pivotError, setPivotError] = useState<string | null>(null);
+  const [commentingTicketId, setCommentingTicketId] = useState<number | null>(null);
+  const [commentInput, setCommentInput] = useState("");
+  const [commentError, setCommentError] = useState<string | null>(null);
+  const [commentSentId, setCommentSentId] = useState<number | null>(null);
   const pivotFlashes = usePivotFlashes(tickets);
+
+  function startComment(ticketId: number): void {
+    setCommentingTicketId(ticketId);
+    setCommentInput("");
+    setCommentError(null);
+    setCommentSentId(null);
+  }
+
+  function submitComment(e: React.FormEvent, toUserId: number): void {
+    e.preventDefault();
+    const err = commentWordError(commentInput);
+    if (err) {
+      setCommentError(err);
+      return;
+    }
+    onSubmitTicketComment?.(toUserId, commentInput.trim());
+    setCommentError(null);
+    setCommentSentId(commentingTicketId);
+  }
 
   const elapsed =
     timer.status === "focus" && timer.phaseEndAt && timer.durationMs
@@ -112,6 +146,7 @@ export function TableDashboard({
       {tickets.map((ticket) => {
         const rosterEntry = roster.find((r) => r.userId === ticket.userId);
         const isMe = ticket.userId === myUserId;
+        const isShadowed = rosterEntry === undefined && timer.status === "focus";
         const checkinPending = rosterEntry?.checkinPending ?? false;
         const canPivot = isMe && timer.status === "focus";
         const isEditing = editingTicketId === ticket.id;
@@ -166,6 +201,11 @@ export function TableDashboard({
                 <p className="truncate text-sm font-medium">
                   {ticket.username}
                   {isMe && <span className="ml-1 opacity-60">(you)</span>}
+                  {isShadowed && (
+                    <span className="ml-1.5 rounded border border-amber-500/30 px-1 text-[10px] uppercase tracking-wide text-amber-500/80">
+                      Shadow
+                    </span>
+                  )}
                   <span className="ml-1.5 font-mono text-xs opacity-50">
                     {Math.round((ticket.personalDurationMs ?? FULL_BLOCK_MS) / 60_000)}m
                   </span>
@@ -276,6 +316,55 @@ export function TableDashboard({
                 )}
               </div>
             )}
+
+            {mode === "problem" &&
+              !isMe &&
+              timer.status === "focus" &&
+              timer.subphase === "collab" &&
+              onSubmitTicketComment && (
+                <div className="mt-2">
+                  {commentingTicketId !== ticket.id ? (
+                    <button
+                      type="button"
+                      onClick={() => startComment(ticket.id)}
+                      className="flex items-center gap-1 rounded-md border border-current px-2 py-1 text-[11px] opacity-60 hover:opacity-100"
+                    >
+                      <MessageSquare size={12} strokeWidth={1.5} />
+                      Comment
+                    </button>
+                  ) : (
+                    <form onSubmit={(e) => submitComment(e, ticket.userId)} className="space-y-1">
+                      <textarea
+                        autoFocus
+                        value={commentInput}
+                        onChange={(e) => {
+                          setCommentInput(e.target.value);
+                          setCommentError(null);
+                        }}
+                        placeholder={`Optional: leave a short comment (≤${MAX_COMMENT_WORDS} words)`}
+                        className="h-16 w-full resize-none rounded-md border border-current bg-transparent p-2 font-mono text-xs outline-none"
+                      />
+                      {commentError && <p className="text-[11px] text-amber">{commentError}</p>}
+                      {commentSentId === ticket.id && !commentError && (
+                        <p className="text-[11px] opacity-60">Comment sent.</p>
+                      )}
+                      <div className="flex gap-2">
+                        <button type="submit" className="rounded-md border border-current px-3 py-1 text-[11px] font-medium opacity-80">
+                          Send
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCommentingTicketId(null)}
+                          className="rounded-md px-3 py-1 text-[11px] opacity-50 hover:opacity-80"
+                        >
+                          Close
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+              )}
+
             {ticket.kudos.length > 0 && (
               <div className="mt-2 flex items-center gap-1 text-xs opacity-70">
                 <div className="flex items-center gap-0.5">

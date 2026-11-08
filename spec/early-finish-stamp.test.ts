@@ -17,7 +17,7 @@ async function registerAndGetCookie(username: string): Promise<string> {
   return setCookie!.split(";")[0];
 }
 
-async function getMe(cookie: string): Promise<{ id: number }> {
+async function getMe(cookie: string): Promise<{ id: number; vfhCount: number }> {
   const res = await fetch(new URL("/api/me", baseUrl), { headers: { cookie } });
   expect(res.status).toBe(200);
   return res.json();
@@ -82,9 +82,13 @@ const mode = "silent";
 // A 25-minute personal block is half of FOCUS_DURATION_MS, so it's
 // comfortably elapsed well before the table-wide focus block ends — this
 // proves the stamp succeeds right there, during focus, not just once the
-// table itself reaches break.
+// table itself reaches break. It also proves VFH is credited immediately
+// off that early stamp (getVfhCount has no duration-based exclusion — a
+// personal-duration ticket counts exactly like a full-block one), and that
+// the credit survives disconnecting right after without ever reaching break
+// or reboarding — closing the "VFH only counts if you keep going" gap.
 it(
-  "allows stamping a personal-duration ticket once its own block is up, while the table is still in focus",
+  "allows stamping a personal-duration ticket once its own block is up, while the table is still in focus, and credits VFH immediately even if the user disconnects right after",
   async () => {
     const slug = "chifley-l1";
     const username = `early-finish-${randomUUID().slice(0, 8)}`;
@@ -116,6 +120,12 @@ it(
       socket.emit("room:stamp-ticket", { stamp: "completed" });
       const stampedPayload = await withTimeout(stamped, 5000, "ticket to be stamped completed during focus");
       expect(stampedPayload.timer.status).toBe("focus");
+
+      // Disconnect immediately — no reboard, no riding out the rest of focus
+      // or break. VFH must already be there on a fresh read.
+      socket.close();
+      const { vfhCount } = await getMe(cookie);
+      expect(vfhCount).toBe(1);
     } finally {
       socket.close();
     }

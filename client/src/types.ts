@@ -22,6 +22,17 @@ export interface Kudos {
   createdAt: number;
 }
 
+// An optional, private written comment left on a ticket — visible only to
+// the ticket's owner, never broadcast table-wide (see broadcastRoom).
+export interface TicketComment {
+  id: number;
+  ticketId: number;
+  fromUserId: number;
+  fromUsername: string;
+  body: string;
+  createdAt: number;
+}
+
 export interface Ticket {
   id: number;
   locationId: number;
@@ -44,6 +55,7 @@ export interface Ticket {
 
 export interface TicketWithKudos extends Ticket {
   kudos: Kudos[];
+  comments: TicketComment[];
 }
 
 export interface RosterEntry {
@@ -94,6 +106,7 @@ export interface RoomUpdatePayload {
   whiteboardText: string;
   whiteboardHighlights: WhiteboardHighlight[];
   peerReviewOpenedAt: number | null;
+  pitchOpenedAt: number | null;
   capacity: number;
   upcoming: ScheduledSession[];
 }
@@ -113,6 +126,16 @@ export interface PeerReviewAssignmentPayload {
 
 export interface PeerReviewHighlightsPayload {
   highlights: PeerReviewHighlight[];
+}
+
+// Targeted (per-socket), not part of RoomUpdatePayload — Concept Pitch
+// counterpart to PeerReviewAssignmentPayload, minus highlights (Pitch has no
+// highlighting tool). Only the listener assigned to this pitcher needs to see
+// it — see rooms.ts's broadcastPitchState.
+export interface PitchAssignmentPayload {
+  pitcherId: number;
+  pitcherUsername: string;
+  text: string;
 }
 
 // Separate from RoomUpdatePayload deliberately: live cursors are a
@@ -242,6 +265,7 @@ export interface UserHistoryEntry {
   stamp: TicketStamp | null;
   stayedFullBlock: boolean;
   cycleStartAt: number;
+  comments: TicketComment[];
 }
 
 export interface LocationHistoryEntry {

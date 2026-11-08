@@ -112,6 +112,17 @@ export interface Kudos {
   createdAt: number;
 }
 
+// An optional, private written comment left on a ticket — visible only to
+// the ticket's owner (see getUserSessionHistory), never broadcast table-wide.
+export interface TicketComment {
+  id: number;
+  ticketId: number;
+  fromUserId: number;
+  fromUsername: string;
+  body: string;
+  createdAt: number;
+}
+
 export type BuddyStatus = "pending" | "accepted";
 
 export interface Buddy {
@@ -159,6 +170,7 @@ export interface UserHistoryEntry {
   stamp: TicketStamp | null;
   stayedFullBlock: boolean;
   cycleStartAt: number;
+  comments: TicketComment[];
 }
 
 // Every ticket ever submitted at a location, regardless of who submitted it
@@ -441,6 +453,22 @@ function migrate(db: DatabaseSync): void {
       -- No REFERENCES users(id): guests can give kudos too.
       from_user_id INTEGER NOT NULL,
       emoji TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(ticket_id, from_user_id)
+    );
+
+    -- An optional, private written comment left on a ticket (Writing Clinic
+    -- reviewer->author, Concept Pitch listener->pitcher, or free-form in
+    -- Problem-Solving). One per (ticket, commenter) pair — resubmitting
+    -- replaces it, same "resubmit replaces" precedent as Peer Review drafts.
+    -- Visible only to the ticket's owner, never broadcast table-wide.
+    CREATE TABLE IF NOT EXISTS ticket_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ticket_id INTEGER NOT NULL REFERENCES tickets(id),
+      -- No REFERENCES users(id): guests can leave comments too.
+      from_user_id INTEGER NOT NULL,
+      from_username TEXT NOT NULL,
+      body TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       UNIQUE(ticket_id, from_user_id)
     );
@@ -904,6 +932,32 @@ export function getKudosForTicket(db: DatabaseSync, ticketId: number): Kudos[] {
     .all(ticketId) as unknown as Kudos[];
 }
 
+// --- ticket comments ---
+
+// Re-submitting replaces the previous comment (same precedent as Peer Review
+// drafts) rather than threading multiple comments per (ticket, commenter).
+export function upsertTicketComment(
+  db: DatabaseSync,
+  ticketId: number,
+  fromUserId: number,
+  fromUsername: string,
+  body: string,
+): void {
+  db.prepare(
+    "INSERT INTO ticket_comments (ticket_id, from_user_id, from_username, body, created_at) VALUES (?, ?, ?, ?, ?) " +
+      "ON CONFLICT(ticket_id, from_user_id) DO UPDATE SET body = excluded.body, created_at = excluded.created_at",
+  ).run(ticketId, fromUserId, fromUsername, body, Date.now());
+}
+
+export function getTicketComments(db: DatabaseSync, ticketId: number): TicketComment[] {
+  return db
+    .prepare(
+      "SELECT id, ticket_id AS ticketId, from_user_id AS fromUserId, from_username AS fromUsername, " +
+        "body, created_at AS createdAt FROM ticket_comments WHERE ticket_id = ? ORDER BY id ASC",
+    )
+    .all(ticketId) as unknown as TicketComment[];
+}
+
 // --- streaks (reboard) ---
 
 // Raw current_streak, 0 if no row exists yet — unlike listStreaksForUser
@@ -1009,8 +1063,29 @@ export function getUserSessionHistory(db: DatabaseSync, userId: number, limit = 
         "WHERE tickets.user_id = ? " +
         "ORDER BY tickets.cycle_start_at DESC, tickets.id DESC LIMIT ?",
     )
-    .all(userId, limit) as unknown as (Omit<UserHistoryEntry, "stayedFullBlock"> & { stayedFullBlock: number })[];
-  return rows.map((r) => ({ ...r, stayedFullBlock: !!r.stayedFullBlock }));
+    .all(userId, limit) as unknown as (Omit<UserHistoryEntry, "stayedFullBlock" | "comments"> & { stayedFullBlock: number })[];
+  if (rows.length === 0) return [];
+
+  const ticketIds = rows.map((r) => r.ticketId);
+  const placeholders = ticketIds.map(() => "?").join(", ");
+  const commentRows = db
+    .prepare(
+      "SELECT id, ticket_id AS ticketId, from_user_id AS fromUserId, from_username AS fromUsername, " +
+        `body, created_at AS createdAt FROM ticket_comments WHERE ticket_id IN (${placeholders}) ORDER BY id ASC`,
+    )
+    .all(...ticketIds) as unknown as TicketComment[];
+  const commentsByTicketId = new Map<number, TicketComment[]>();
+  for (const c of commentRows) {
+    const list = commentsByTicketId.get(c.ticketId);
+    if (list) list.push(c);
+    else commentsByTicketId.set(c.ticketId, [c]);
+  }
+
+  return rows.map((r) => ({
+    ...r,
+    stayedFullBlock: !!r.stayedFullBlock,
+    comments: commentsByTicketId.get(r.ticketId) ?? [],
+  }));
 }
 
 export function getLocationSessionHistory(db: DatabaseSync, locationId: number, limit = 20): LocationHistoryEntry[] {
@@ -1121,15 +1196,21 @@ export function deleteUserChatMessages(db: DatabaseSync, userId: number): void {
   db.prepare("DELETE FROM chat_messages WHERE user_id = ?").run(userId);
 }
 
-// Clears kudos left ON this user's tickets before the tickets themselves go,
-// since kudos.ticket_id has nothing else to cascade that for.
+// Clears kudos and comments left ON this user's tickets before the tickets
+// themselves go, since kudos.ticket_id/ticket_comments.ticket_id have nothing
+// else to cascade that for.
 export function deleteUserTickets(db: DatabaseSync, userId: number): void {
   db.prepare("DELETE FROM kudos WHERE ticket_id IN (SELECT id FROM tickets WHERE user_id = ?)").run(userId);
+  db.prepare("DELETE FROM ticket_comments WHERE ticket_id IN (SELECT id FROM tickets WHERE user_id = ?)").run(userId);
   db.prepare("DELETE FROM tickets WHERE user_id = ?").run(userId);
 }
 
 export function deleteUserKudosGiven(db: DatabaseSync, userId: number): void {
   db.prepare("DELETE FROM kudos WHERE from_user_id = ?").run(userId);
+}
+
+export function deleteUserCommentsGiven(db: DatabaseSync, userId: number): void {
+  db.prepare("DELETE FROM ticket_comments WHERE from_user_id = ?").run(userId);
 }
 
 export function deleteUserBuddies(db: DatabaseSync, userId: number): void {
