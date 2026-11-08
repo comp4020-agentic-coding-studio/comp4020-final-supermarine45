@@ -58,9 +58,19 @@ jobs:
           docker build -t app .
           docker run -d --init --name app -p 8080:8080 -e PORT=8080 -e TABLE_CYCLE_MS=18000 -e CHECKIN_GRACE_MS=8000 -e CYCLE_START_GRANULARITY_MS=18000 --tmpfs /data app
       - name: Run the spec
+        # early-finish-stamp.test.ts and leave-early-vfh.test.ts compute real
+        # setTimeout waits off TABLE_CYCLE_MS (not just a timeout bound on a
+        # server-driven event, like every other spec), so vitest's own
+        # process needs the same test-speed vars as the container — left
+        # unset here, TABLE_CYCLE_MS falls back to its real 1-hour default
+        # and those two specs each sleep ~25 real minutes, blowing the job's
+        # 20-minute timeout with no output at all.
         run: pnpm check
         env:
           APP_URL: http://localhost:8080
+          TABLE_CYCLE_MS: "18000"
+          CHECKIN_GRACE_MS: "8000"
+          CYCLE_START_GRANULARITY_MS: "18000"
       - name: Show the app's output
         # what the container printed, so a crash or slow boot is visible
         if: ${{ failure() }}
