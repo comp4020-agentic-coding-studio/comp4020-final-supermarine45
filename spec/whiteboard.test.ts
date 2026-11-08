@@ -56,23 +56,6 @@ function untilStatus(socket: Socket, status: string): Promise<RoomUpdate> {
   });
 }
 
-// Collab is the Whiteboard's entire gate (whiteboardSubphaseOk), so every
-// test here waits for the server's own split-point broadcast (armSubphaseTimer
-// fires a real room:update right at the split, not just a lazily-computed
-// value on the next incidental broadcast) rather than estimating the timing
-// itself.
-function untilSubphase(socket: Socket, subphase: string): Promise<RoomUpdate> {
-  return new Promise((resolve) => {
-    const handler = (payload: RoomUpdate): void => {
-      if (payload.timer.subphase === subphase) {
-        socket.off("room:update", handler);
-        resolve(payload);
-      }
-    };
-    socket.on("room:update", handler);
-  });
-}
-
 function untilTicketCount(socket: Socket, count: number): Promise<RoomUpdate> {
   return new Promise((resolve) => {
     const handler = (payload: RoomUpdate): void => {
@@ -143,7 +126,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 // whiteboardSubphaseOk (src/rooms.ts) checks mode === "problem" before it
 // ever looks at table status or subphase, so every whiteboard action is
 // rejected wrong_mode in any other mode immediately — no cycle wait needed.
-it("rejects room:launch-whiteboard outside Problem-Solving mode with wrong_mode", async () => {
+it("rejects room:whiteboard-paste outside Problem-Solving mode with wrong_mode", async () => {
   const slug = "hedley-l2";
   const mode = "silent";
   const cookie = await registerAndGetCookie(`wb-wrongmode-${randomUUID().slice(0, 8)}`);
@@ -156,26 +139,27 @@ it("rejects room:launch-whiteboard outside Problem-Solving mode with wrong_mode"
     await once(socket, "room:update");
 
     const rejection = once<RoomError>(socket, "room:error");
-    socket.emit("room:launch-whiteboard");
-    const payload = await withTimeout(rejection, 5000, "room:error for launch-whiteboard outside Problem-Solving");
-    expect(payload).toEqual({ error: "wrong_mode", action: "room:launch-whiteboard" });
+    socket.emit("room:whiteboard-paste", { text: "hi" });
+    const payload = await withTimeout(rejection, 5000, "room:error for whiteboard-paste outside Problem-Solving");
+    expect(payload).toEqual({ error: "wrong_mode", action: "room:whiteboard-paste" });
   } finally {
     socket.close();
   }
 });
 
-// The whole Whiteboard story inside one Collab window: launch is open to any
-// boarded participant (no leader-gating — leader-only functions only ever
-// applied to the break phase, and launch fires during focus/collab), and
-// paste/highlight sync live to the other viewer, and a live cursor reaches
-// the other socket but never the sender and never rides room:update. Collab
-// is only a few seconds wide at CI's test-speed cycle (splitMinutes 40 of 50
-// means an 80%-elapsed split, with focus ending at 100%), so every step fires
-// the moment its predecessor's broadcast confirms, with no incidental sleeps
-// except the one deliberately placed last (proving the sender never gets its
-// own cursor back) — nothing after that point still needs Collab to be open.
+// The whole Whiteboard story inside one Collab window: it auto-opens for
+// everyone the instant Collab starts (armWhiteboardTimer, same pattern as
+// Peer Review — no manual "Launch" step, and no one boarder is favored over
+// another), and paste/highlight sync live to the other viewer, and a live
+// cursor reaches the other socket but never the sender and never rides
+// room:update. Collab is only a few seconds wide at CI's test-speed cycle
+// (splitMinutes 40 of 50 means an 80%-elapsed split, with focus ending at
+// 100%), so every step fires the moment its predecessor's broadcast confirms,
+// with no incidental sleeps except the one deliberately placed last (proving
+// the sender never gets its own cursor back) — nothing after that point
+// still needs Collab to be open.
 it(
-  "lets any boarded participant launch the whiteboard (no leader-gating), then live-syncs paste/highlight and relays cursor to others but never the sender",
+  "auto-opens the whiteboard for every boarded participant at the Collab split (no manual launch), then live-syncs paste/highlight and relays cursor to others but never the sender",
   async () => {
     const slug = "hedley-common";
     const mode = "problem";
@@ -219,17 +203,12 @@ it(
       await withTimeout(aFocus, TABLE_CYCLE_MS + 10000, "a to see focus status");
       await withTimeout(bFocus, TABLE_CYCLE_MS + 10000, "b to see focus update");
 
-      const aCollab = untilSubphase(a, "collab");
-      const bCollab = untilSubphase(b, "collab");
-      await withTimeout(aCollab, TABLE_CYCLE_MS + 10000, "a to see collab subphase");
-      await withTimeout(bCollab, TABLE_CYCLE_MS + 10000, "b to see collab update");
-
-      // b launches it, not a — proving launch is open to any boarded
-      // participant, not gated to whichever ticket boarded first.
+      // The server opens the whiteboard itself the instant Collab starts, with
+      // no client action required — wait for whiteboardOpenedAt directly
+      // rather than the subphase flag, since that's the actual gate every
+      // other whiteboard action checks (whiteboardSubphaseOk).
       const opened = Promise.all([untilWhiteboardOpened(a), untilWhiteboardOpened(b)]);
-      b.emit("room:launch-whiteboard");
-
-      const [openedA, openedB] = await withTimeout(opened, 5000, "both sockets to see whiteboardOpenedAt set");
+      const [openedA, openedB] = await withTimeout(opened, TABLE_CYCLE_MS + 10000, "both sockets to see whiteboardOpenedAt auto-set at the Collab split");
       expect(openedA.whiteboardOpenedAt).not.toBeNull();
       expect(openedB.whiteboardOpenedAt).toBe(openedA.whiteboardOpenedAt);
 

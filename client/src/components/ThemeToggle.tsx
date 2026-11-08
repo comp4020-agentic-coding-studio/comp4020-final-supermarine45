@@ -1,10 +1,10 @@
-import { Monitor, Moon, Sun } from "lucide-react";
+import { Moon, Sun } from "lucide-react";
 import { useTheme } from "../context/useTheme";
 import type { Theme } from "../context/theme-context";
 
-const NEXT: Record<Theme, Theme> = { light: "dark", dark: "system", system: "light" };
-const ICON: Record<Theme, typeof Sun> = { light: Sun, dark: Moon, system: Monitor };
-const LABEL: Record<Theme, string> = { light: "Light theme", dark: "Dark theme", system: "System theme" };
+const NEXT: Record<Theme, Theme> = { light: "dark", dark: "light" };
+const ICON: Record<Theme, typeof Sun> = { light: Sun, dark: Moon };
+const LABEL: Record<Theme, string> = { light: "Light theme", dark: "Dark theme" };
 
 export function ThemeToggle({ className }: { className?: string }) {
   const { theme, setTheme } = useTheme();

@@ -22,7 +22,6 @@ export function Whiteboard({
   whiteboardHighlights,
   cursors,
   now,
-  onLaunch,
   onPaste,
   onHighlight,
   onCursor,
@@ -34,7 +33,6 @@ export function Whiteboard({
   whiteboardHighlights: WhiteboardHighlight[];
   cursors: CursorMap;
   now: number;
-  onLaunch: () => void;
   onPaste: (text: string) => void;
   onHighlight: (start: number, end: number) => void;
   onCursor: (x: number, y: number) => void;
@@ -55,19 +53,7 @@ export function Whiteboard({
     };
   }, []);
 
-  if (!whiteboardOpenedAt) {
-    return (
-      <div className="rounded-xl border border-sage/30 bg-white/5 p-4 text-center text-white">
-        <button
-          type="button"
-          onClick={onLaunch}
-          className="rounded-md bg-sage px-4 py-2 text-sm font-medium text-espresso"
-        >
-          Launch whiteboard
-        </button>
-      </div>
-    );
-  }
+  if (!whiteboardOpenedAt) return null;
 
   function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>): void {
     const next = e.target.value;

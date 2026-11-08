@@ -263,9 +263,10 @@ interface WhiteboardState {
   openedAt: number | null;
 }
 const whiteboards = new Map<string, WhiteboardState>();
-// tableKey -> the fallback timer that auto-opens the Whiteboard if nobody
-// clicks Launch, so a disengaged table can't block itself.
-const whiteboardFallbackTimers = new Map<string, NodeJS.Timeout>();
+// tableKey -> the timer that auto-opens the Whiteboard at the Collab split
+// (minute 40), same pattern as peerReviewTimers below — nobody has to click
+// anything for it to become usable.
+const whiteboardTimers = new Map<string, NodeJS.Timeout>();
 
 // Peer Review (Writing Clinic Collab only): opens automatically at minute 40
 // (no manual "Launch" step, unlike the Whiteboard) via armPeerReviewTimer.
@@ -458,11 +459,11 @@ function clearTableTimer(key: string): void {
   if (subphase) subphase.forEach(clearTimeout);
   subphaseTimers.delete(key);
   // Easy to miss: without clearing this too, a rapid idle<->focus<->break
-  // transition (e.g. in tests) would leak a stale fallback timer or let it
+  // transition (e.g. in tests) would leak a stale auto-open timer or let it
   // double-fire against the table's next cycle.
-  const whiteboardFallback = whiteboardFallbackTimers.get(key);
-  if (whiteboardFallback) clearTimeout(whiteboardFallback);
-  whiteboardFallbackTimers.delete(key);
+  const whiteboardTimer = whiteboardTimers.get(key);
+  if (whiteboardTimer) clearTimeout(whiteboardTimer);
+  whiteboardTimers.delete(key);
   const peerReview = peerReviewTimers.get(key);
   if (peerReview) clearTimeout(peerReview);
   peerReviewTimers.delete(key);
@@ -493,7 +494,7 @@ function armNextTransition(io: Server, db: DatabaseSync, locationId: number, mod
     );
     if (state.status === "focus") {
       armSubphaseTimer(io, db, locationId, mode, state);
-      armWhiteboardFallbackTimer(io, db, locationId, mode, state);
+      armWhiteboardTimer(io, db, locationId, mode, state);
       armPeerReviewTimer(io, db, locationId, mode, state);
       armCheckinTimers(io, db, locationId, mode, state);
     }
@@ -520,7 +521,7 @@ function armNextTransition(io: Server, db: DatabaseSync, locationId: number, mod
 //
 // Writing and Problem each get a second, independent broadcast for free at
 // (or right after) the same split instant — armPeerReviewTimer and
-// armWhiteboardFallbackTimer both call broadcastRoom too, plus every
+// armWhiteboardTimer both call broadcastRoom too, plus every
 // toggle-stuck/draft/highlight action during their collab window does the
 // same. Concept Pitch has no such mechanic at all (confirmed: no pitch-
 // specific socket handler exists), so it alone depends on this one timer
@@ -555,26 +556,33 @@ function armSubphaseTimer(io: Server, db: DatabaseSync, locationId: number, mode
   if (timers.length > 0) subphaseTimers.set(key, timers);
 }
 
-// Nobody should be able to silently deny the whole table a Whiteboard just by
-// not clicking Launch: 60s after the Collab transition, auto-open it if no
-// one has. Problem-Solving only — the only mode with a Whiteboard at all.
-function armWhiteboardFallbackTimer(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, state: RoomState): void {
+// Opens the Whiteboard automatically at the Collab split point (minute 40) —
+// same pattern as armPeerReviewTimer below, no manual "Launch" step required
+// to make it usable. Problem-Solving only — the only mode with a Whiteboard
+// at all.
+function armWhiteboardTimer(io: Server, db: DatabaseSync, locationId: number, mode: ActivityMode, state: RoomState): void {
   if (mode !== "problem") return;
   const split = splitMsFor(mode);
   if (split === null) return;
   const key = tableKey(locationId, mode);
-  const fallbackAt = state.phaseStartedAt! + split + 60_000;
-  const delay = fallbackAt - Date.now();
-  if (delay <= 0) return;
-  whiteboardFallbackTimers.set(
-    key,
-    setTimeout(() => {
-      if (whiteboards.get(key)?.openedAt != null) return;
-      whiteboards.set(key, { text: "", highlights: [], openedAt: Date.now() });
-      logSystemAction(db, locationId, "System", `Whiteboard auto-opened for ${mode} (fallback).`);
-      broadcastRoom(io, db, locationId, mode);
-    }, delay),
-  );
+  const openAt = state.phaseStartedAt! + split;
+  const delay = openAt - Date.now();
+  const openNow = () => {
+    if (whiteboards.get(key)?.openedAt != null) return;
+    whiteboards.set(key, { text: "", highlights: [], openedAt: Date.now() });
+    logSystemAction(db, locationId, "System", `Whiteboard opened for ${mode}.`);
+    broadcastRoom(io, db, locationId, mode);
+  };
+  if (delay <= 0) {
+    // Re-armed (e.g. rearmTimers after a server restart) after minute 40
+    // already passed, but we're still mid-focus (armNextTransition only
+    // re-arms a "focus" table whose phaseEndAt is still ahead, since
+    // reconcileRoomStates would've reset an already-ended one to idle) — open
+    // immediately rather than silently never opening for the rest of this cycle.
+    openNow();
+    return;
+  }
+  whiteboardTimers.set(key, setTimeout(openNow, delay));
 }
 
 // Opens the Peer Review portal automatically at the Collab split point
@@ -588,16 +596,25 @@ function armPeerReviewTimer(io: Server, db: DatabaseSync, locationId: number, mo
   const key = tableKey(locationId, mode);
   const openAt = state.phaseStartedAt! + split;
   const delay = openAt - Date.now();
-  if (delay <= 0) return;
-  peerReviewTimers.set(
-    key,
-    setTimeout(() => {
-      if (peerReviews.get(key)?.openedAt != null) return;
-      peerReviews.set(key, { openedAt: Date.now(), drafts: new Map(), assignments: new Map(), highlights: new Map() });
-      logSystemAction(db, locationId, "System", `Peer Review opened for ${mode}.`);
-      broadcastRoom(io, db, locationId, mode);
-    }, delay),
-  );
+  const openNow = () => {
+    if (peerReviews.get(key)?.openedAt != null) return;
+    peerReviews.set(key, { openedAt: Date.now(), drafts: new Map(), assignments: new Map(), highlights: new Map() });
+    logSystemAction(db, locationId, "System", `Peer Review opened for ${mode}.`);
+    broadcastRoom(io, db, locationId, mode);
+  };
+  if (delay <= 0) {
+    // Re-armed (e.g. rearmTimers after a server restart) after minute 40
+    // already passed, but we're still mid-focus (armNextTransition only
+    // re-arms a "focus" table whose phaseEndAt is still ahead, since
+    // reconcileRoomStates would've reset an already-ended one to idle) — open
+    // immediately rather than silently never opening for the rest of this
+    // cycle. Unlike Whiteboard, Peer Review has no manual "Launch" fallback,
+    // so without this a restart between minute 40 and 50 would permanently
+    // skip the swap for that cycle.
+    openNow();
+    return;
+  }
+  peerReviewTimers.set(key, setTimeout(openNow, delay));
 }
 
 // Arms one table-wide timer per distinct check-in fire time across every
@@ -1199,25 +1216,6 @@ export function registerSocketHandlers(io: Server, db: DatabaseSync): void {
         return;
       }
       logRoomAction(db, locationId, identityLabel(user, socket.id), `Sent ${emoji} kudos to '${recipientTicket.username}'.`);
-      broadcastRoom(io, db, locationId, mode);
-    });
-
-    socket.on("room:launch-whiteboard", () => {
-      if (!joined) return;
-      const user = currentIdentity();
-      if (!user || isShadow || isDemoted()) {
-        const reason = isDemoted() ? "demoted" : "unauthorized";
-        logRoomAction(db, joined.locationId, identityLabel(user, socket.id), `Attempted ${reason} room:launch-whiteboard. Rejected.`);
-        socket.emit("room:error", { error: reason, action: "room:launch-whiteboard" });
-        return;
-      }
-      const { locationId, mode } = joined;
-      if (!whiteboardSubphaseOk(db, locationId, mode)) {
-        socket.emit("room:error", { error: "wrong_mode", action: "room:launch-whiteboard" });
-        return;
-      }
-      whiteboards.set(tableKey(locationId, mode), { text: "", highlights: [], openedAt: Date.now() });
-      logRoomAction(db, locationId, identityLabel(user, socket.id), "Launched the Whiteboard.");
       broadcastRoom(io, db, locationId, mode);
     });
 

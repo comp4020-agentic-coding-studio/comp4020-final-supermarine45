@@ -114,7 +114,7 @@ export function AccountPage() {
   const sessionsThisWeek = history.filter((h) => Date.now() - h.cycleStartAt < WEEK_MS).length;
   const recentSessions = history.slice(0, RECENT_SESSIONS_SHOWN);
   const olderSessions = history.slice(RECENT_SESSIONS_SHOWN);
-  const completedCount = history.filter((h) => h.stamp !== null && h.stayedFullBlock).length;
+  const completedCount = history.filter((h) => h.stamp !== null).length;
   const notCompletedCount = history.filter((h) => h.stamp === null && h.stayedFullBlock).length;
 
   return (

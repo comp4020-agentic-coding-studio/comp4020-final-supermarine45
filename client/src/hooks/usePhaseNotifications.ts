@@ -41,6 +41,7 @@ export function usePhaseNotifications(
   const prevStatusRef = useRef<string | undefined>(undefined);
   const prevSubphaseRef = useRef<string | null | undefined>(undefined);
   const prevWhiteboardOpenedAtRef = useRef<number | null | undefined>(undefined);
+  const prevPeerReviewOpenedAtRef = useRef<number | null | undefined>(undefined);
   const prevKudosCountRef = useRef<number | undefined>(undefined);
   // A check-in request is only visible in-tab (CheckInModal) otherwise —
   // someone legitimately working in another tab/app (exactly who this app
@@ -62,6 +63,12 @@ export function usePhaseNotifications(
     if ((prevStatus !== undefined && prevStatus !== room.timer.status) || (prevSubphase !== undefined && prevSubphase !== room.timer.subphase)) {
       if (chimeEnabled) playChime();
     }
+    // Concept Pitch has no shared artifact to open (unlike Whiteboard/Peer
+    // Review), so the subphase flip itself is the only Collab-start signal —
+    // fire the same notification shape directly off it.
+    if (room.mode === "pitch" && prevSubphase === "solo" && room.timer.subphase === "collab") {
+      notify("🟢 Collab Phase Unlocked", "Time to explain your concept out loud to the table.");
+    }
     prevStatusRef.current = room.timer.status;
     prevSubphaseRef.current = room.timer.subphase;
 
@@ -74,6 +81,12 @@ export function usePhaseNotifications(
       );
     }
     prevWhiteboardOpenedAtRef.current = room.whiteboardOpenedAt;
+
+    const prevPeerReviewOpenedAt = prevPeerReviewOpenedAtRef.current;
+    if (prevPeerReviewOpenedAt !== undefined && prevPeerReviewOpenedAt === null && room.peerReviewOpenedAt !== null) {
+      notify("🟢 Collab Phase Unlocked", "Peer Review is open — paste your draft to get a table-mate's feedback.");
+    }
+    prevPeerReviewOpenedAtRef.current = room.peerReviewOpenedAt;
 
     if (myUserId !== undefined) {
       const myTicket = room.tickets.find((t) => t.userId === myUserId);

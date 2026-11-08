@@ -6,9 +6,11 @@ import { useAuth } from "../context/useAuth";
 import { useTableSocket } from "../hooks/useTableSocket";
 import { useNow } from "../hooks/useNow";
 import { usePhaseNotifications } from "../hooks/usePhaseNotifications";
+import { useKudosToasts } from "../hooks/useKudosToasts";
 import { useChimePreference } from "../hooks/useChimePreference";
 import { cancelSchedule, planSession } from "../api";
 import { PhaseBanner } from "../components/PhaseBanner";
+import { KudosToasts } from "../components/KudosToasts";
 import { PipTimerButton } from "../components/PipTimerButton";
 import { TicketForm } from "../components/TicketForm";
 import { TableDashboard } from "../components/TableDashboard";
@@ -55,7 +57,6 @@ export function TablePage() {
     stampTicket,
     sendKudos,
     setPseudonym,
-    launchWhiteboard,
     whiteboardPaste,
     whiteboardHighlight,
     whiteboardCursor,
@@ -76,6 +77,7 @@ export function TablePage() {
 
   const { chimeEnabled } = useChimePreference(me, refresh);
   usePhaseNotifications(room, me?.id, chimeEnabled, now, pendingCheckIn);
+  const kudosToasts = useKudosToasts(room, me?.id);
 
   // Tracks the one ticket id a user has dismissed the early-finish modal for
   // (via "Keep working") so it doesn't reappear every render for the same
@@ -165,6 +167,7 @@ export function TablePage() {
 
   return (
     <main className="mx-auto max-w-6xl px-6 py-10">
+      <KudosToasts toasts={kudosToasts} />
       <Link to={`/room/${slug}`} className="text-sm text-ink-muted underline">
         &larr; {joined?.location.name ?? slug}
       </Link>
@@ -306,7 +309,6 @@ export function TablePage() {
               whiteboardHighlights={room.whiteboardHighlights}
               cursors={cursors}
               now={now}
-              onLaunch={launchWhiteboard}
               onPaste={whiteboardPaste}
               onHighlight={whiteboardHighlight}
               onCursor={whiteboardCursor}

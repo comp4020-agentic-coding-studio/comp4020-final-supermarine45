@@ -39,7 +39,6 @@ export interface TableSocketState {
   stampTicket: (stamp: "completed" | "partial" | "pivoted") => void;
   sendKudos: (toUserId: number, emoji: string) => void;
   setPseudonym: (pseudonym: string) => void;
-  launchWhiteboard: () => void;
   whiteboardPaste: (text: string) => void;
   whiteboardHighlight: (start: number, end: number) => void;
   whiteboardCursor: (x: number, y: number) => void;
@@ -208,7 +207,6 @@ export function useTableSocket(
     stampTicket: (stamp) => getSocket().emit("room:stamp-ticket", { stamp }),
     sendKudos: (toUserId, emoji) => getSocket().emit("room:send-kudos", { toUserId, emoji }),
     setPseudonym: (pseudonym: string) => getSocket().emit("set_pseudonym", { pseudonym }),
-    launchWhiteboard: () => getSocket().emit("room:launch-whiteboard"),
     whiteboardPaste: (text: string) => getSocket().emit("room:whiteboard-paste", { text }),
     whiteboardHighlight: (start: number, end: number) => getSocket().emit("room:whiteboard-highlight", { start, end }),
     whiteboardCursor: (x: number, y: number) => getSocket().emit("room:whiteboard-cursor", { x, y }),

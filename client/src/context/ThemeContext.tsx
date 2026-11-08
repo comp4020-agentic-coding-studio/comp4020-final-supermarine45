@@ -6,24 +6,18 @@ const STORAGE_KEY = "suar:theme";
 function readStoredTheme(): Theme {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored === "light" || stored === "dark" || stored === "system") return stored;
+    if (stored === "light" || stored === "dark") return stored;
+    // Stale "system" value from before that option was removed — resolve it
+    // once against the OS preference instead of silently defaulting to light.
+    if (stored === "system") return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   } catch {
-    // localStorage unavailable (private browsing, disabled storage) — fall back to system.
+    // localStorage unavailable (private browsing, disabled storage) — fall back to light.
   }
-  return "system";
-}
-
-function systemPrefersDark(): boolean {
-  return window.matchMedia("(prefers-color-scheme: dark)").matches;
-}
-
-function resolve(theme: Theme): "light" | "dark" {
-  return theme === "system" ? (systemPrefersDark() ? "dark" : "light") : theme;
+  return "light";
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(readStoredTheme);
-  const [resolvedTheme, setResolvedTheme] = useState<"light" | "dark">(() => resolve(readStoredTheme()));
 
   const setTheme = useCallback((next: Theme) => {
     setThemeState(next);
@@ -35,17 +29,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    setResolvedTheme(resolve(theme));
-    if (theme !== "system") return;
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => setResolvedTheme(resolve("system"));
-    media.addEventListener("change", onChange);
-    return () => media.removeEventListener("change", onChange);
+    document.documentElement.dataset.theme = theme;
   }, [theme]);
 
-  useEffect(() => {
-    document.documentElement.dataset.theme = resolvedTheme;
-  }, [resolvedTheme]);
-
-  return <ThemeContext.Provider value={{ theme, resolvedTheme, setTheme }}>{children}</ThemeContext.Provider>;
+  return <ThemeContext.Provider value={{ theme, resolvedTheme: theme, setTheme }}>{children}</ThemeContext.Provider>;
 }
